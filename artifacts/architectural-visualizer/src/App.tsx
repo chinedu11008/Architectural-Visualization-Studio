@@ -3,15 +3,25 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Box,
   Camera,
+  ArrowRight,
+  ArrowUpRight,
+  Activity,
+  CheckCircle2,
   ChevronDown,
+  ChevronRight,
   CircleHelp,
   Compass,
+  Clock3,
   FileBox,
+  FileCheck2,
   FolderOpen,
+  ImageIcon,
   ImagePlus,
   Info,
+  LayoutDashboard,
   Layers3,
   Lightbulb,
+  ListFilter,
   LoaderCircle,
   Menu,
   MousePointer2,
@@ -19,6 +29,8 @@ import {
   PanelRight,
   RotateCcw,
   Save,
+  Search,
+  SearchX,
   Settings2,
   SlidersHorizontal,
   Sparkles,
@@ -33,7 +45,7 @@ import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
+import { Link, Route, Switch, useLocation, Router as WouterRouter } from 'wouter';
 
 const queryClient = new QueryClient();
 
@@ -149,14 +161,16 @@ function Home() {
   return (
     <div className="studio-shell">
       <header className="studio-topbar">
-        <div className="brand-lockup" data-testid="text-product-name">
+         <Link href="/dashboard" className="brand-lockup" data-testid="link-dashboard-home">
           <div className="brand-mark" aria-hidden="true" />
           <div>
             <div className="brand-name">Lumen / Field</div>
             <div className="brand-sub">Architectural visualization studio</div>
           </div>
-        </div>
+         </Link>
         <div className="topbar-center">
+           <Link href="/dashboard" className="studio-home-link" data-testid="link-open-dashboard"><LayoutDashboard size={13} /> Project home</Link>
+           <span className="project-divider" />
           <span className="project-title" data-testid="text-project-name">Aster House / exterior study</span>
           <span className="project-divider" />
           <span className="small-meta">Saved locally · 2 min ago</span>
@@ -386,10 +400,263 @@ function Home() {
   );
 }
 
+type DashboardFilter = 'all' | 'projects' | 'scenes';
+type DashboardProject = {
+  id: string;
+  title: string;
+  kind: 'project' | 'scene';
+  description: string;
+  updated: string;
+  scenes: string;
+  model: string;
+  reference: string;
+  accent: 'ochre' | 'sage' | 'rose' | 'steel';
+  current?: boolean;
+};
+
+const dashboardProjects: DashboardProject[] = [
+  {
+    id: 'aster-house',
+    title: 'Aster House',
+    kind: 'project',
+    description: 'Exterior study',
+    updated: '2 min ago',
+    scenes: '04 scenes',
+    model: 'Aster House.rvt',
+    reference: 'courtyard_dusk.jpg',
+    accent: 'ochre',
+    current: true,
+  },
+  {
+    id: 'cedar-courtyard',
+    title: 'Cedar Courtyard',
+    kind: 'project',
+    description: 'Material and shadow tests',
+    updated: 'Yesterday',
+    scenes: '07 scenes',
+    model: 'cedar-courtyard.pln',
+    reference: '2 references',
+    accent: 'sage',
+  },
+  {
+    id: 'north-facade',
+    title: 'North facade / 02',
+    kind: 'scene',
+    description: 'Overcast material pass',
+    updated: '3 days ago',
+    scenes: 'Scene only',
+    model: 'Aster House.rvt',
+    reference: 'No reference',
+    accent: 'steel',
+  },
+  {
+    id: 'marsh-pavilion',
+    title: 'Marsh Pavilion',
+    kind: 'project',
+    description: 'Early massing study',
+    updated: 'May 18',
+    scenes: '03 scenes',
+    model: 'Model needed',
+    reference: 'marsh-light.png',
+    accent: 'rose',
+  },
+];
+
+function Dashboard() {
+  const [, setLocation] = useLocation();
+  const [filter, setFilter] = useState<DashboardFilter>('all');
+  const [query, setQuery] = useState('');
+  const [selectedProject, setSelectedProject] = useState('aster-house');
+  const [selectionMessage, setSelectionMessage] = useState('Aster House is ready to continue.');
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleProjects = dashboardProjects.filter((project) => {
+    const matchesFilter = filter === 'all' || project.kind === (filter === 'projects' ? 'project' : 'scene');
+    const matchesQuery = !normalizedQuery || `${project.title} ${project.description}`.toLowerCase().includes(normalizedQuery);
+    return matchesFilter && matchesQuery;
+  });
+  const selected = dashboardProjects.find((project) => project.id === selectedProject) ?? dashboardProjects[0];
+
+  const chooseProject = (project: DashboardProject) => {
+    setSelectedProject(project.id);
+    setSelectionMessage(`${project.title} selected. Continue in the studio when you are ready.`);
+  };
+
+  return (
+    <div className="dashboard-shell">
+      <header className="dashboard-topbar">
+        <Link href="/dashboard" className="dashboard-brand" data-testid="link-dashboard-brand">
+          <span className="brand-mark" aria-hidden="true" />
+          <span>
+            <span className="brand-name">Lumen / Field</span>
+            <span className="brand-sub">Architectural visualization studio</span>
+          </span>
+        </Link>
+        <nav className="dashboard-nav" aria-label="Primary navigation">
+          <Link href="/dashboard" className="dashboard-nav-link active" data-testid="link-dashboard-nav-home">
+            <LayoutDashboard size={14} /> Home
+          </Link>
+          <Link href="/" className="dashboard-nav-link" data-testid="link-dashboard-nav-studio">
+            <Compass size={14} /> Studio
+          </Link>
+        </nav>
+        <div className="dashboard-user">
+          <span className="dashboard-status"><span className="status-dot" /> Local workspace</span>
+          <span className="avatar">MC</span>
+          <span className="dashboard-user-name">Mara Chen</span>
+        </div>
+      </header>
+
+      <main className="dashboard-main">
+        <section className="dashboard-welcome">
+          <div>
+            <div className="dashboard-kicker"><span className="kicker-line" /> Project home / 06.24</div>
+            <h1>Good evening, <em>Mara.</em></h1>
+            <p>Pick up a study, check your ingredients, or step back into the light.</p>
+          </div>
+          <div className="dashboard-welcome-actions">
+            <span className="dashboard-sync"><CheckCircle2 size={14} /> All changes saved locally</span>
+            <Link href="/" className="primary-button dashboard-continue" data-testid="link-continue-studio">
+              Continue in studio <ArrowRight size={15} />
+            </Link>
+          </div>
+        </section>
+
+        <section className="dashboard-feature-grid" aria-label="Current project">
+          <button
+            type="button"
+            className={`featured-project ${selected.id === 'aster-house' ? 'selected' : ''}`}
+            onClick={() => chooseProject(dashboardProjects[0])}
+            data-testid="card-featured-aster-house"
+          >
+            <div className="featured-project-image" aria-hidden="true">
+              <div className="dashboard-moon" />
+              <div className="dashboard-ridge ridge-one" />
+              <div className="dashboard-ridge ridge-two" />
+              <div className="dashboard-house">
+                <span className="dashboard-house-roof" />
+                <span className="dashboard-house-body" />
+                <span className="dashboard-house-window window-a" />
+                <span className="dashboard-house-window window-b" />
+                <span className="dashboard-house-window window-c" />
+              </div>
+              <span className="featured-image-label">Exterior / dusk 01</span>
+            </div>
+            <div className="featured-project-copy">
+              <div className="project-card-topline"><span className="eyebrow">Current project</span><ArrowUpRight size={15} /></div>
+              <h2>Aster House</h2>
+              <p>Exterior study</p>
+              <div className="featured-meta"><span><span className="status-dot" /> Environment ready</span><span>Edited 2 min ago</span></div>
+            </div>
+          </button>
+
+          <div className="selected-project-panel">
+            <div className="eyebrow">Selected workspace</div>
+            <div className="selected-project-title">
+              <div><h2 data-testid="text-selected-project">{selected.title}</h2><span>{selected.description}</span></div>
+              <span className={`project-kind ${selected.kind}`}>{selected.kind}</span>
+            </div>
+            <p className="selection-message" data-testid="status-project-selection">{selectionMessage}</p>
+            <div className="selected-project-stats">
+              <div><span className="stat-label">Scenes</span><strong>{selected.scenes}</strong></div>
+              <div><span className="stat-label">Last touched</span><strong>{selected.updated}</strong></div>
+            </div>
+            <Link href="/" className="secondary-button selected-project-action" data-testid="link-open-selected-project">
+              Open selected project <ChevronRight size={14} />
+            </Link>
+          </div>
+        </section>
+
+        <section className="readiness-strip" aria-label="Workspace readiness">
+          <div className="readiness-heading">
+            <div className="eyebrow">Workspace pulse</div>
+            <h2>Ready to render</h2>
+          </div>
+          <div className="readiness-item">
+            <span className="readiness-icon ready"><FileCheck2 size={16} /></span>
+            <div><span className="stat-label">BIM model</span><strong>Aster House.rvt</strong><small>18.4 MB · Revit</small></div>
+          </div>
+          <div className="readiness-item">
+            <span className="readiness-icon ready"><ImageIcon size={16} /></span>
+            <div><span className="stat-label">Reference</span><strong>courtyard_dusk.jpg</strong><small>Warm dusk study</small></div>
+          </div>
+          <div className="readiness-item readiness-action">
+            <span className="readiness-icon warm"><Sparkles size={16} /></span>
+            <div><span className="stat-label">Next pass</span><strong>Exterior / dusk 01</strong><small>Camera is saved locally</small></div>
+            <Link href="/" aria-label="Open next pass in studio" data-testid="link-open-next-pass"><ArrowUpRight size={15} /></Link>
+          </div>
+        </section>
+
+        <section className="dashboard-lower-grid">
+          <div className="recent-projects-section">
+            <div className="section-heading-row">
+              <div><div className="eyebrow">Your workspace</div><h2>Recent projects &amp; scenes</h2></div>
+              <span className="small-meta">{visibleProjects.length} of {dashboardProjects.length}</span>
+            </div>
+            <div className="project-toolbar">
+              <label className="dashboard-search">
+                <Search size={15} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects or scenes" aria-label="Search projects or scenes" data-testid="input-dashboard-search" />
+                {query && <button type="button" className="clear-search" onClick={() => setQuery('')} aria-label="Clear project search" data-testid="button-clear-dashboard-search"><X size={13} /></button>}
+              </label>
+              <div className="filter-tabs" role="tablist" aria-label="Filter projects">
+                {(['all', 'projects', 'scenes'] as DashboardFilter[]).map((item) => (
+                  <button type="button" key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)} role="tab" aria-selected={filter === item} data-testid={`button-filter-${item}`}>
+                    {item === 'all' ? 'All' : item === 'projects' ? 'Projects' : 'Scenes'}
+                  </button>
+                ))}
+                <ListFilter size={14} aria-hidden="true" />
+              </div>
+            </div>
+            {visibleProjects.length > 0 ? (
+              <div className="project-list">
+                {visibleProjects.map((project) => (
+                  <button
+                    type="button"
+                    key={project.id}
+                    className={`project-list-item ${selectedProject === project.id ? 'selected' : ''}`}
+                    onClick={() => chooseProject(project)}
+                    data-testid={`card-recent-project-${project.id}`}
+                  >
+                    <span className={`project-thumbnail thumb-${project.accent}`} aria-hidden="true"><span className="thumbnail-shape" /><span className="thumbnail-light" /></span>
+                    <span className="project-list-copy"><strong>{project.title}</strong><span>{project.description}</span></span>
+                    <span className="project-list-kind">{project.kind}</span>
+                    <span className="project-list-updated"><Clock3 size={13} /> {project.updated}</span>
+                    <ChevronRight className="project-list-arrow" size={16} />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="dashboard-empty" data-testid="empty-dashboard-projects">
+                <SearchX size={21} />
+                <strong>No studies found</strong>
+                <span>Try a different name or clear the filter.</span>
+                <button type="button" className="secondary-button" onClick={() => { setQuery(''); setFilter('all'); }} data-testid="button-reset-dashboard-filter">Show all studies</button>
+              </div>
+            )}
+          </div>
+
+          <aside className="activity-section">
+            <div className="section-heading-row"><div><div className="eyebrow">Trace / local</div><h2>Recent activity</h2></div><Activity size={15} /></div>
+            <div className="activity-list">
+              <div className="activity-item"><span className="activity-marker warm" /><div><strong>Rendered exterior / dusk 01</strong><span>Aster House · 2 min ago</span></div></div>
+              <div className="activity-item"><span className="activity-marker sage" /><div><strong>Saved camera view</strong><span>Perspective · 8 min ago</span></div></div>
+              <div className="activity-item"><span className="activity-marker steel" /><div><strong>Reference image inspected</strong><span>courtyard_dusk.jpg · 14 min ago</span></div></div>
+              <div className="activity-item"><span className="activity-marker rose" /><div><strong>Model added to workspace</strong><span>Aster House.rvt · 21 min ago</span></div></div>
+            </div>
+            <div className="activity-note"><span className="eyebrow">Field note</span><p>“Let the concrete carry the cool ambient sky.”</p><span className="small-meta">Working note / Aster House</span></div>
+          </aside>
+        </section>
+      </main>
+    </div>
+  );
+}
+
 function Router() {
   return (
     <RoutedErrorBoundary>
       <Switch>
+        <Route path="/dashboard" component={Dashboard} />
         <Route path="/" component={Home} />
         <Route component={NotFound} />
       </Switch>
