@@ -1,7 +1,7 @@
 # Architectural Visualization Studio — React
 
-**Lumen / Field** · the Studio (`/`) and the Project Dashboard (`/dashboard`).
-Plain React (JSX) + Vite. Installs with **npm** — no pnpm needed.
+**Lumen / Field** · Sign in → Dashboard → Workspace → Account → Subscription.
+Plain React (JSX) + Vite + Tailwind CSS. Installs with **npm** — no pnpm needed.
 
 ## Run
 
@@ -20,21 +20,26 @@ To open it on your phone, connect to the same Wi-Fi and visit `http://<your-comp
 
 ## Structure
 
+The structure is the Figma Make project's, file for file:
+
 ```
 index.html
 vite.config.js
 src/
-  main.jsx               entry (mounts <App /> inside the error boundary)
-  App.jsx                router + Studio page + Dashboard page
-  index.css              all styling, including the responsive layer (sm 640 · md 768 · lg 1024)
-  pages/not-found.jsx    404 page
-  components/            error-boundary.jsx · ui/card.jsx
-  lib/utils.js           cn() class helper
-public/                  favicon.svg · robots.txt
+  main.jsx                 entry
+  App.jsx                  state-based navigation: signin · dashboard · workspace · account · subscription
+  index.css                Inter font, colour tokens, mobile safe-area + scrollbar rules, hatch pattern
+  pages/
+    SignIn.jsx  Dashboard.jsx  Workspace.jsx  Account.jsx  Subscription.jsx
+  components/
+    Header.jsx  UserDropdown.jsx
+public/favicon.svg
 ```
 
-## Notes
+## Colours
 
-- Same design, markup and behaviour as the original app (with the Figma Make responsive update applied).
-- Left out, because nothing on screen used them: the API server, database and OpenAPI packages,
-  the unused UI-kit components, react-query, and the empty toast/tooltip providers.
+Layout, spacing, breakpoints and behaviour come straight from the Make code.
+Colours are kept separate: every colour class points at a token defined at the top of `src/index.css`.
+
+- Default: this project's dark / amber palette.
+- The Figma Make's original light palette is included — add `data-theme="light"` to `<html>` in `index.html` to use it.
