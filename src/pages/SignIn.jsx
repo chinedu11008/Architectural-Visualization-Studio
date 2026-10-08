@@ -1,5 +1,3 @@
-
-
 export default function SignIn({ onNavigate }) {
   return (
     <div className="min-h-screen flex items-center justify-center bg-page p-4 sm:p-6">
@@ -23,7 +21,7 @@ export default function SignIn({ onNavigate }) {
             <div className="flex flex-col gap-1.5">
               <p className="text-muted text-[11px] leading-[16px]">A studio for architectural atmosphere</p>
               <p className="text-ink font-bold text-[20px] sm:text-[23px] leading-[30px] sm:leading-[32px]">
-                turns the first feeling into<br className="hidden sm:block" /> a place to look around.
+                From Idea to Render<br className="hidden sm:block" /> In Minutes.
               </p>
             </div>
 
@@ -31,7 +29,7 @@ export default function SignIn({ onNavigate }) {
             <div className="border border-line rounded-[6px] p-5 sm:p-6 flex flex-col gap-4 w-full max-w-[384px]">
               <div>
                 <p className="text-muted text-[11px] leading-[16px]">Welcome back</p>
-                <h2 className="text-ink font-bold text-[17px] leading-[28px]">Return to your studio</h2>
+                <h2 className="text-ink font-bold text-[17px] leading-[28px]">Return to your Studio</h2>
               </div>
 
               <form
@@ -72,8 +70,6 @@ export default function SignIn({ onNavigate }) {
                 </button>
               </div>
             </div>
-
-            <p className="text-muted-2 text-[11px]">Lumen / Field · A studio for architectural atmosphere</p>
           </div>
         </div>
       </div>

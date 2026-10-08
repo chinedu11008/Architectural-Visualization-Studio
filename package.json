@@ -3,9 +3,10 @@
   "private": true,
   "version": "2.0.0",
   "type": "module",
-  "description": "Lumen / Field \u2014 Architectural Visualization Studio (React + Vite + Tailwind)",
+  "description": "Lumen / Field — Architectural Visualization Studio (React + Vite + Tailwind)",
   "scripts": {
     "dev": "vite",
+    "api": "node backend/run-api.js",
     "build": "vite build",
     "preview": "vite preview"
   },
@@ -13,8 +14,11 @@
     "node": ">=20.19.0"
   },
   "dependencies": {
+    "lucide-react": "^1.51.0",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "three": "^0.186.1",
+    "web-ifc": "^0.0.78"
   },
   "devDependencies": {
     "@tailwindcss/vite": "4.2.2",

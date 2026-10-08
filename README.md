@@ -1,45 +1,98 @@
-# Architectural Visualization Studio — React
+# Lumen / Field
 
-**Lumen / Field** · Sign in → Dashboard → Workspace → Account → Subscription.
-Plain React (JSX) + Vite + Tailwind CSS. Installs with **npm** — no pnpm needed.
+**An IFC-first visualization studio for small architecture practices.** Load an IFC exported from Revit or Archicad, pair it with a reference image and scene prompt, inspect the source geometry in the in-app 3D viewer, and save a render plus client review history.
 
-## Run
+## Problem and customer
 
-```bash
+Independent architects and small practices need a faster path from a BIM model to a visual their client can review. Lumen / Field keeps the IFC, reference, scene settings, render images, prompts, client notes, and approvals attached to one project.
+
+The first customer is an independent architect or a 1–10 person practice preparing residential and small commercial concepts. A possible business model is a free solo tier followed by paid project limits, render credits, shared review, and team storage. Pricing is a hypothesis, not a validated plan.
+
+## Run locally on Windows
+
+Prerequisites: Node 20.19+ and Python 3.14+ (`py --version`). Docker and Blender are not required for this in-app WebGL version.
+
+```powershell
 npm install
-npm run dev       # http://localhost:5173
+py -m venv .venv
+.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 ```
 
-```bash
-npm run build     # production build → dist/
-npm run preview   # serve the production build
+Start each service in a separate PowerShell terminal:
+
+```powershell
+npm run api
 ```
 
-Needs Node 20.19 or newer (https://nodejs.org).
-To open it on your phone, connect to the same Wi-Fi and visit `http://<your-computer-IP>:5173`.
-
-## Structure
-
-The structure is the Figma Make project's, file for file:
-
+```powershell
+npm run dev
 ```
-index.html
-vite.config.js
+
+Open the Vite URL, usually `http://localhost:5173`. The API is local at `http://127.0.0.1:8000`; Vite proxies `/api` to it. API documentation is available at `http://127.0.0.1:8000/docs`.
+
+```powershell
+.venv\Scripts\python.exe -m pytest backend\tests -q
+npm run build
+```
+
+## Workflow
+
+1. Create or open a project.
+2. Upload an `.ifc` exported from Revit or Archicad (IFC4 or IFC2x3) and a JPG, PNG, or WebP reference image.
+3. Enter the scene prompt; choose camera, lighting, environment, ground, and material appearance. Reference-derived colors are the default IFC surface palette.
+4. Trees and shrubs are suggested by prompt keywords and a lightweight greenery-color cue from the reference. Cars are suggested by prompt keywords. Toggle each context prop before rendering.
+5. Orbit the parsed source model in the Three.js canvas; render a PNG from the locked IFC scene plus its separate site-context layer and browse saved renders in the scene tabs.
+6. Use the lower-left camera button for repeatable environment snapshots; download each saved PNG from its selected snapshot.
+7. Save prompt versions, add client feedback, approve the direction, and export the visualization brief.
+
+## Geometry immutability
+
+- Web-IFC parses the uploaded IFC in the browser and supplies the source vertex/index buffers and IFC placement matrices. Three.js uses those buffers and placement matrices without AI-generated or prompt-authored geometry.
+- IFC mesh transforms are fixed (`matrixAutoUpdate = false`). Camera controls, lighting, and presentation materials do not move, scale, add, or reshape model geometry.
+- The prompt can suggest separate context objects but cannot change the IFC mesh. The API schema accepts only camera, lighting, environment, ground, material, and bounded context toggles; unknown geometry-edit fields are rejected.
+- Ground, trees, shrubs, and cars are generated in a sibling Three.js presentation group. They are not written into the IFC or included in its geometry hash. Their approximate placement is a visual staging aid, not a site-plan or code-compliance result.
+- The local API stores the original IFC as a read-only asset with a SHA-256 digest. It verifies that digest when creating and starting a render job and again before accepting the resulting PNG.
+
+The current render is a real-time WebGL image captured from the in-app IFC scene. It is not a path-traced Lumion-quality image and no generative AI is currently used. A small color palette is sampled from the reference and mapped to IFC material appearance by source-color brightness. Reference analysis only looks for green color regions; it does not identify semantic objects such as cars in an image. Cars are inferred from prompt words. A future vision model may suggest context assets, but must remain isolated from the IFC geometry pipeline.
+
+## Local architecture
+
+- **Frontend:** React 19, Vite, Tailwind CSS, Three.js, and Web-IFC WASM. The IFC/Three.js bundle is lazy-loaded only when the studio opens.
+- **API:** FastAPI and SQLite provide optional upload synchronization, immutable asset metadata, SHA-256 verification, render-job records, and stored PNG results. The browser can render and save snapshots without the API.
+- **Offline storage:** IFCs, references, and snapshots are saved in browser IndexedDB. The production service worker caches the app shell and viewer/WASM files as they are used. Open a project and load an IFC once while online before disconnecting; later uploads, model viewing, and snapshots stay on this device. Interactive IFC previews are capped at 16 MiB, 60,000 faces, and 75,000 Cartesian points to protect browser memory. IFCs through 64 MiB can still sync to the API; larger files remain local-only.
+- **Local API storage:** synchronized uploads, SQLite records, and server-side PNGs live under ignored `backend/.data/`. The API binds to `127.0.0.1`; it is a single-user local service, not an internet-facing deployment.
+- **Tests:** `backend/tests/test_api.py` covers file validation, hashes, presentation-only settings, tamper rejection, and render completion.
+
+The example IFC used for development testing stays out of the repository. No external paid API or cloud service is required for the local workflow.
+
+## Production path
+
+1. Add user authentication, organization/tenant authorization, PostgreSQL, and private object storage.
+2. Keep render-job records and status transitions, but move processing to a durable queue and independent workers.
+3. Add background high-quality rendering only if needed. Workers must load the original IFC, keep geometry immutable, and report the source hash plus output asset ID.
+4. Validate IFC conversion coverage, render quality, turnaround, hardware needs, and willingness to pay with pilot studios before adding native Revit/Archicad conversion or subscription billing.
+
+Native `.rvt`, `.pln`, and `.pla` files are not accepted by this IFC-first build; export IFC from those tools first.
+
+## Five-minute demo outline
+
+- **0:00–0:45:** Explain the small-practice BIM-to-client-visualization problem.
+- **0:45–1:30:** Show React/Vite, the local FastAPI service, SQLite asset/job records, and Web-IFC/Three.js viewer.
+- **1:30–3:45:** Upload an IFC and reference, inspect/orbit the model, change camera/light/material presentation, render a PNG, save a prompt version, add feedback, approve, refresh, and export the brief. Point out the immutable geometry label and source-hash verification.
+- **3:45–4:30:** Describe the independent-practice customer and unvalidated subscription/render-credit hypothesis.
+- **4:30–5:00:** Explain how the local API and SQLite can evolve to authenticated storage and queued render workers without allowing those workers to modify model geometry.
+
+## Project layout
+
+```text
+backend/
+  main.py                 Local API, SQLite records, uploads, hash checks
+  run-api.js              Cross-platform virtualenv launcher
+  requirements.txt        FastAPI and test dependencies
+  tests/test_api.py       Asset/job integrity tests
 src/
-  main.jsx                 entry
-  App.jsx                  state-based navigation: signin · dashboard · workspace · account · subscription
-  index.css                Inter font, colour tokens, mobile safe-area + scrollbar rules, hatch pattern
-  pages/
-    SignIn.jsx  Dashboard.jsx  Workspace.jsx  Account.jsx  Subscription.jsx
-  components/
-    Header.jsx  UserDropdown.jsx
-public/favicon.svg
+  components/IfcViewer.jsx    Web-IFC parsing and locked Three.js scene
+  pages/Dashboard.jsx         Project list, search, filters, creation
+  pages/Workspace.jsx         IFC inputs, render canvas, review controls
+  App.jsx                     Project metadata persistence and navigation
 ```
-
-## Colours
-
-Layout, spacing, breakpoints and behaviour come straight from the Make code.
-Colours are kept separate: every colour class points at a token defined at the top of `src/index.css`.
-
-- Default: this project's dark / amber palette.
-- The Figma Make's original light palette is included — add `data-theme="light"` to `<html>` in `index.html` to use it.

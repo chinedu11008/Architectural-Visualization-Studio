@@ -1,14 +1,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
 @import 'tailwindcss';
 
-/*
- * Colour tokens
- * ─────────────
- * Every page follows the Figma Make code exactly (same markup, layout, breakpoints and behaviour).
- * Colour is the only thing kept apart: all colour classes point at the tokens below.
- *   default                   → this project's dark / amber palette
- *   <html data-theme="light"> → the Figma Make's original light palette
- */
 :root {
   color-scheme: dark;
 
