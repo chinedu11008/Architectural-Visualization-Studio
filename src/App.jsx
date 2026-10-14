@@ -52,6 +52,8 @@ function readProjects() {
     const projects = stored ? JSON.parse(stored) : starterProjects;
     return projects.map((project) => ({
       ...project,
+      feedback: Array.isArray(project.feedback) ? project.feedback : [],
+      renders: Array.isArray(project.renders) ? project.renders : [],
       versions: Array.isArray(project.versions)
         ? project.versions
         : project.direction
@@ -59,7 +61,14 @@ function readProjects() {
           : [],
     }));
   } catch {
-    return starterProjects;
+    return starterProjects.map((project) => ({
+      ...project,
+      feedback: Array.isArray(project.feedback) ? project.feedback : [],
+      renders: Array.isArray(project.renders) ? project.renders : [],
+      versions: project.direction
+        ? [{ id: `${project.id}-initial`, text: project.direction, createdAt: project.updated }]
+        : [],
+    }));
   }
 }
 
@@ -89,7 +98,7 @@ export default function App() {
       status: 'In progress',
       updated: 'Just now',
       image: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1400&q=85',
-      referenceImage: null,
+      referenceAsset: null,
       referenceName: 'Studio sample reference',
       modelAsset: null,
       prompt: '',
@@ -97,6 +106,7 @@ export default function App() {
       feedback: [],
       versions: [],
       renders: [],
+      sceneContext: { environment: 'auto', ground: 'grass', upAxis: 'auto', overrides: {} },
     };
     setProjects((current) => [project, ...current]);
     setActiveProjectId(project.id);

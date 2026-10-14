@@ -39,21 +39,24 @@ npm run build
 
 1. Create or open a project.
 2. Upload an `.ifc` exported from Revit or Archicad (IFC4 or IFC2x3) and a JPG, PNG, or WebP reference image.
-3. Enter the scene prompt; choose camera, lighting, environment, ground, and material appearance. Reference-derived colors are the default IFC surface palette.
-4. Trees and shrubs are suggested by prompt keywords and a lightweight greenery-color cue from the reference. Cars are suggested by prompt keywords. Toggle each context prop before rendering.
-5. Orbit the parsed source model in the Three.js canvas; render a PNG from the locked IFC scene plus its separate site-context layer and browse saved renders in the scene tabs.
-6. Use the lower-left camera button for repeatable environment snapshots; download each saved PNG from its selected snapshot.
-7. Save prompt versions, add client feedback, approve the direction, and export the visualization brief.
+3. Enter a scene prompt and choose camera, lighting, environment, ground, and material appearance. The reference image supplies editable colors for detected IFC building roles; its sky and greenery colors are excluded from the building palette.
+4. Review the IFC summary before rendering. The browser reports units, dimensions, storeys, element classes, material and space properties, building-use signals, a likely entrance, site data, and any warnings. Confirm the detected building type or choose one when confidence is low.
+5. Review the proposed planting, people, vehicles, paths, boundary and ground cover. Edit each building type's surroundings rule, toggle scene elements, and use the layout seed to reproduce or regenerate the arrangement. These choices require a fresh confirmation before rendering.
+6. Orbit the parsed source model in the Three.js canvas; render a PNG from the locked IFC scene plus its separate site-context layer and browse saved renders in the scene tabs.
+7. Use the lower-left camera button for repeatable environment snapshots; download each saved PNG from its selected snapshot.
+8. Save prompt versions, add client feedback, approve the direction, and export the visualization brief.
 
 ## Geometry immutability
 
 - Web-IFC parses the uploaded IFC in the browser and supplies the source vertex/index buffers and IFC placement matrices. Three.js uses those buffers and placement matrices without AI-generated or prompt-authored geometry.
 - IFC mesh transforms are fixed (`matrixAutoUpdate = false`). Camera controls, lighting, and presentation materials do not move, scale, add, or reshape model geometry.
-- The prompt can suggest separate context objects but cannot change the IFC mesh. The API schema accepts only camera, lighting, environment, ground, material, and bounded context toggles; unknown geometry-edit fields are rejected.
-- Ground, trees, shrubs, and cars are generated in a sibling Three.js presentation group. They are not written into the IFC or included in its geometry hash. Their approximate placement is a visual staging aid, not a site-plan or code-compliance result.
+- The prompt can set scene atmosphere but cannot change IFC geometry or recolor every mesh. The API accepts presentation settings, building-role colors, a reviewed building type, bounded surroundings rules, a deterministic layout seed, and context toggles; unknown geometry-edit fields are rejected.
+- Ground, paths, trees, shrubs, people, vehicles, gates, and boundary elements are generated in a sibling Three.js presentation group. They are not written into the IFC or included in its geometry hash. The arrangement uses parsed geometry bounds, an IFC site shape when it provides a usable plot, the selected building type, and a saved seed. It is a visual staging aid, not a surveyed site plan or code-compliance result.
 - The local API stores the original IFC as a read-only asset with a SHA-256 digest. It verifies that digest when creating and starting a render job and again before accepting the resulting PNG.
 
-The current render is a real-time WebGL image captured from the in-app IFC scene. It is not a path-traced Lumion-quality image and no generative AI is currently used. A small color palette is sampled from the reference and mapped to IFC material appearance by source-color brightness. Reference analysis only looks for green color regions; it does not identify semantic objects such as cars in an image. Cars are inferred from prompt words. A future vision model may suggest context assets, but must remain isolated from the IFC geometry pipeline.
+The current render is a real-time WebGL image captured from the in-app IFC scene. It is not a path-traced Lumion-quality image and no generative AI is currently used. Reference colors are sampled from a central image crop after removing likely sky, greenery, and extreme colors; the palette is a visual heuristic and can be edited by building role. IFC class and property metadata guide the role assignment. Missing or ambiguous IFC metadata can leave an element on its original source color. Type detection and entrance selection are also heuristics: review the report, correct the building type when needed, and check the approach against the model before rendering. Generated entourage uses approximate dimensions in metres and avoids known building bounds, but does not provide survey, accessibility, traffic, planting-species, or code review.
+
+For an IFC review, repeat the same steps with a residential model, a public or commercial model, and a model with weak or missing use metadata. Confirm the type and unit warnings, inspect the entrance and boundary, toggle each context group, regenerate with the same seed to check repeatability, then change the seed to check placement changes. Compare the model before and after rendering; source mesh positions and dimensions must remain identical. The browser build and API schema checks are available in the local commands above. IFC-specific placement needs real files and visual inspection in the viewer.
 
 ## Local architecture
 

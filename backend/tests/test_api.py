@@ -70,7 +70,21 @@ def test_render_job_only_accepts_presentation_settings(api):
             "material_style": "warm",
             "environment": "golden",
             "ground": "grass",
-            "context_objects": {"trees": True, "shrubs": True, "cars": True, "grass": True},
+            "context_objects": {"trees": True, "shrubs": True, "cars": True, "people": True, "boundary": True, "paths": True, "grass": True},
+            "building_roles": {"exteriorWall": "#d7d0c4", "roof": "#3c464b"},
+            "building_type": "hospital",
+            "building_type_override": "hospital",
+            "surroundings_rules": {
+                "hospital": {
+                    "vegetation": "formal",
+                    "trees": 5,
+                    "shrubs": 10,
+                    "people": 12,
+                    "vehicles": ["ambulance", "car"],
+                    "fence": "low masonry and dark metal",
+                },
+            },
+            "layout_seed": 721,
         },
         "geometry": {"scale": 4},
     }
@@ -89,6 +103,11 @@ def test_render_job_only_accepts_presentation_settings(api):
     assert response.json()["status"] == "queued"
     assert response.json()["presentation"]["environment"] == "golden"
     assert response.json()["presentation"]["context_objects"]["cars"] is True
+    assert response.json()["presentation"]["context_objects"]["paths"] is True
+    assert response.json()["presentation"]["building_roles"]["exteriorWall"] == "#d7d0c4"
+    assert response.json()["presentation"]["building_type"] == "hospital"
+    assert response.json()["presentation"]["surroundings_rules"]["hospital"]["vehicles"] == ["ambulance", "car"]
+    assert response.json()["presentation"]["layout_seed"] == 721
 
 
 def test_source_tampering_rejects_render_start(api):
@@ -137,3 +156,54 @@ def test_render_completion_requires_original_model_hash(api):
     downloaded = api.get(completed.json()["result_url"])
     assert downloaded.status_code == 200
     assert downloaded.content == PNG_BYTES
+    # Render images must be served inline without attachment header
+    assert "attachment" not in downloaded.headers.get("content-disposition", "")
+
+
+def test_list_project_assets_and_jobs(api):
+    model, reference = upload_assets(api)
+    assets_resp = api.get("/api/projects/test-project/assets")
+    assert assets_resp.status_code == 200
+    assets = assets_resp.json()
+    assert len(assets) == 2
+    kinds = {a["kind"] for a in assets}
+    assert kinds == {"ifc", "reference"}
+
+    created = api.post("/api/render-jobs", json={
+        "project_id": "test-project",
+        "model_asset_id": model["id"],
+        "reference_asset_id": reference["id"],
+        "prompt": "Soft daylight.",
+        "presentation": {"camera": "isometric", "lighting": "daylight", "material_style": "source"},
+    }).json()
+
+    jobs_resp = api.get("/api/projects/test-project/render-jobs")
+    assert jobs_resp.status_code == 200
+    jobs = jobs_resp.json()
+    assert len(jobs) == 1
+    assert jobs[0]["id"] == created["id"]
+
+
+def test_render_completion_cleans_up_on_invalid_dimensions(api):
+    model, reference = upload_assets(api)
+    created = api.post("/api/render-jobs", json={
+        "project_id": "test-project",
+        "model_asset_id": model["id"],
+        "reference_asset_id": reference["id"],
+        "prompt": "Test dimension mismatch.",
+        "presentation": {"camera": "isometric", "lighting": "daylight", "material_style": "source"},
+    }).json()
+    api.post(f"/api/render-jobs/{created['id']}/start")
+
+    # Mismatched dimensions (PNG is 1x1, claims 2x2)
+    mismatched_metadata = json.dumps({"model_sha256": model["sha256"], "width": 2, "height": 2})
+    rejected = api.post(
+        f"/api/render-jobs/{created['id']}/complete",
+        data={"metadata": mismatched_metadata},
+        files={"image": ("render.png", PNG_BYTES, "image/png")},
+    )
+    assert rejected.status_code == 422
+
+    # Check that orphan asset was cleaned up from the assets list
+    assets_resp = api.get("/api/projects/test-project/assets")
+    assert len(assets_resp.json()) == 2  # Only model and reference remain

@@ -1,7 +1,7 @@
 const DATABASE_NAME = 'lumen-field-assets';
 const STORE_NAME = 'assets';
 const objectUrls = new Map();
-export const MAX_BROWSER_IFC_BYTES = 16 * 1024 * 1024;
+export const MAX_BROWSER_IFC_BYTES = 300 * 1024 * 1024;
 
 export function createLocalId() {
   const value = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;

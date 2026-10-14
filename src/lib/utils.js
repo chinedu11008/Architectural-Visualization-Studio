@@ -1,6 +1,6 @@
-import { twMerge } from 'tailwind-merge';
-import { clsx } from 'clsx';
-
 export function cn(...inputs) {
-  return twMerge(clsx(inputs));
+  return inputs
+    .flat(Infinity)
+    .filter((x) => typeof x === 'string' && x.trim().length > 0)
+    .join(' ');
 }

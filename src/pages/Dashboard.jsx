@@ -54,7 +54,7 @@ export default function Dashboard({ projects, onNavigate, onOpenProject, onCreat
     return matchesFilter && search.includes(query.toLowerCase());
   }), [projects, query, filter]);
   const renderCount = projects.reduce((count, project) => count + (project.renders?.length || 0), 0);
-  const feedbackCount = projects.reduce((count, project) => count + project.feedback.length, 0);
+  const feedbackCount = projects.reduce((count, project) => count + (project.feedback?.length || 0), 0);
 
   const create = (details) => {
     setFormOpen(false);
@@ -122,7 +122,7 @@ export default function Dashboard({ projects, onNavigate, onOpenProject, onCreat
                       </div>
                       <p className="text-ink-4 text-[12px] leading-5 line-clamp-2 min-h-10">{project.direction || 'Add a visual direction to start the client review.'}</p>
                       <div className="flex items-center justify-between border-t border-line-2 pt-3 mt-auto">
-                        <span className="text-muted text-[10px]">{project.renders?.length || 0} renders · {project.modelAsset?.name || 'No model'} · {project.feedback.length} {project.feedback.length === 1 ? 'note' : 'notes'}</span>
+                        <span className="text-muted text-[10px]">{project.renders?.length || 0} renders · {project.modelAsset?.filename || project.modelAsset?.name || 'No model'} · {(project.feedback?.length || 0)} {(project.feedback?.length || 0) === 1 ? 'note' : 'notes'}</span>
                         <button onClick={() => onOpenProject(project.id)} className="text-accent text-[11px]">Open project →</button>
                       </div>
                     </div>

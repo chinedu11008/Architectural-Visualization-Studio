@@ -6,7 +6,7 @@ import os
 import secrets
 import sqlite3
 import struct
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -30,11 +30,16 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def connect_db() -> sqlite3.Connection:
+@contextmanager
+def connect_db():
     connection = sqlite3.connect(DB_PATH, timeout=10)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    return connection
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def init_db() -> None:
@@ -171,9 +176,9 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
                 if size > max_bytes:
                     raise HTTPException(status_code=413, detail="Upload exceeds the allowed file size")
                 digest.update(chunk)
-                if len(prefix) < 128:
-                    prefix.extend(chunk[: 128 - len(prefix)])
-                tail = (tail + chunk)[-256:]
+                if len(prefix) < 4096:
+                    prefix.extend(chunk[: 4096 - len(prefix)])
+                tail = (tail + chunk)[-4096:]
                 target.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
@@ -184,7 +189,7 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
             signature_ok = (
                 (suffix in {".jpg", ".jpeg"} and prefix.startswith(b"\xff\xd8\xff"))
                 or (suffix == ".png" and prefix.startswith(b"\x89PNG\r\n\x1a\n"))
-                or (suffix == ".webp" and prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP")
+                or (suffix == ".webp" and len(prefix) >= 12 and prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP")
             )
             if not signature_ok:
                 raise HTTPException(status_code=415, detail="Image content does not match its file extension")
@@ -214,7 +219,49 @@ class ContextObjectSettings(BaseModel):
     trees: bool = True
     shrubs: bool = True
     cars: bool = False
+    people: bool = True
+    boundary: bool = True
+    paths: bool = True
     grass: bool = True
+
+
+class BuildingRoleSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    exteriorWall: str = Field(default="#e8e1d6", pattern=r"^#[0-9a-fA-F]{6}$")
+    interiorWall: str = Field(default="#d8d2c8", pattern=r"^#[0-9a-fA-F]{6}$")
+    roof: str = Field(default="#41494d", pattern=r"^#[0-9a-fA-F]{6}$")
+    trim: str = Field(default="#898c88", pattern=r"^#[0-9a-fA-F]{6}$")
+    door: str = Field(default="#795b43", pattern=r"^#[0-9a-fA-F]{6}$")
+    balustrade: str = Field(default="#343b3c", pattern=r"^#[0-9a-fA-F]{6}$")
+    glazing: str = Field(default="#53646b", pattern=r"^#[0-9a-fA-F]{6}$")
+
+
+VehicleType = Literal["car", "ambulance", "bus", "van", "truck"]
+BuildingType = Literal["house", "apartment", "hospital", "school", "office", "retail", "worship", "hotel", "industrial", "other"]
+
+
+class SurroundingsRule(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    vegetation: str = Field(default="light planting", max_length=80)
+    trees: int = Field(default=2, ge=0, le=16)
+    shrubs: int = Field(default=4, ge=0, le=24)
+    people: int = Field(default=3, ge=0, le=30)
+    vehicles: list[VehicleType] = Field(default_factory=list, max_length=5)
+    fence: str = Field(default="dark metal", max_length=80)
+
+
+class SurroundingsRuleTable(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    house: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    apartment: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    hospital: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    school: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    office: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    retail: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    worship: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    hotel: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    industrial: SurroundingsRule = Field(default_factory=SurroundingsRule)
+    other: SurroundingsRule = Field(default_factory=SurroundingsRule)
 
 
 class PresentationSettings(BaseModel):
@@ -223,6 +270,11 @@ class PresentationSettings(BaseModel):
     lighting: Literal["daylight", "overcast", "golden", "blue"] = "daylight"
     material_style: Literal["source", "reference", "warm", "timber", "concrete"] = "reference"
     reference_palette: list[str] = Field(default_factory=list, max_length=8)
+    building_roles: BuildingRoleSettings = Field(default_factory=BuildingRoleSettings)
+    building_type: BuildingType = "other"
+    building_type_override: BuildingType | Literal[""] = ""
+    surroundings_rules: SurroundingsRuleTable = Field(default_factory=SurroundingsRuleTable)
+    layout_seed: int = Field(default=19, ge=1, le=2147483646)
     environment: Literal["clear", "overcast", "golden", "blue"] = "clear"
     ground: Literal["grass", "gravel", "paving"] = "grass"
     context_objects: ContextObjectSettings = Field(default_factory=ContextObjectSettings)
@@ -275,7 +327,7 @@ def get_asset(asset_id: str) -> dict:
 def get_asset_content(asset_id: str) -> FileResponse:
     row = lookup_asset(asset_id)
     path = verify_asset(row)
-    return FileResponse(path, media_type=row["content_type"], filename=row["filename"] if row["kind"] != "reference" else None)
+    return FileResponse(path, media_type=row["content_type"], filename=row["filename"] if row["kind"] not in {"reference", "render"} else None)
 
 
 @app.post("/api/render-jobs", status_code=201)
@@ -368,16 +420,28 @@ async def complete_render_job(job_id: str, metadata: str = Form(...), image: Upl
     if Path(image.filename or "render.png").suffix.lower() != ".png":
         raise HTTPException(status_code=415, detail="Render output must be a PNG")
     row = await store_upload(job["project_id"], "render", image)
-    if row["content_type"] not in {"image/png", "application/octet-stream"}:
-        raise HTTPException(status_code=415, detail="Render output must be a PNG")
-    output_path = verify_asset(row)
-    with output_path.open("rb") as result_file:
-        png_header = result_file.read(24)
-        if len(png_header) != 24 or not png_header.startswith(b"\x89PNG\r\n\x1a\n") or png_header[12:16] != b"IHDR":
-            raise HTTPException(status_code=415, detail="Render output is not a valid PNG")
-        width, height = struct.unpack(">II", png_header[16:24])
-        if (width, height) != (complete.width, complete.height):
-            raise HTTPException(status_code=422, detail="PNG dimensions do not match completion metadata")
+    try:
+        if row["content_type"] not in {"image/png", "application/octet-stream"}:
+            raise HTTPException(status_code=415, detail="Render output must be a PNG")
+        output_path = verify_asset(row)
+        with output_path.open("rb") as result_file:
+            png_header = result_file.read(24)
+            if len(png_header) != 24 or not png_header.startswith(b"\x89PNG\r\n\x1a\n") or png_header[12:16] != b"IHDR":
+                raise HTTPException(status_code=415, detail="Render output is not a valid PNG")
+            width, height = struct.unpack(">II", png_header[16:24])
+            if (width, height) != (complete.width, complete.height):
+                raise HTTPException(status_code=422, detail="PNG dimensions do not match completion metadata")
+    except Exception:
+        try:
+            with connect_db() as connection:
+                connection.execute("DELETE FROM assets WHERE id = ?", (row["id"],))
+            asset_file = ASSET_DIR / row["storage_name"]
+            if asset_file.exists():
+                os.chmod(asset_file, 0o600)
+                asset_file.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
     updated_at = now()
     with connect_db() as connection:
         connection.execute(
@@ -386,6 +450,15 @@ async def complete_render_job(job_id: str, metadata: str = Form(...), image: Upl
         )
         completed_job = connection.execute("SELECT * FROM render_jobs WHERE id = ?", (job_id,)).fetchone()
     return job_dict(completed_job)
+
+
+@app.get("/api/projects/{project_id}/assets")
+def list_project_assets(project_id: str) -> list[dict]:
+    with connect_db() as connection:
+        rows = connection.execute(
+            "SELECT * FROM assets WHERE project_id = ? ORDER BY created_at DESC", (project_id,)
+        ).fetchall()
+    return [asset_dict(row) for row in rows]
 
 
 @app.get("/api/projects/{project_id}/render-jobs")

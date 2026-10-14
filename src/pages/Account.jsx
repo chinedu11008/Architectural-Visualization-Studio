@@ -102,7 +102,7 @@ export default function Account({ onNavigate }) {
                 </p>
                 <div className="flex flex-col">
                   {[
-                    { label: 'Default model format', value: 'Revit .RVT' },
+                    { label: 'Default model format', value: 'IFC (IFC4 / IFC2x3)' },
                     { label: 'Render quality', value: 'High — 2048px' },
                     { label: 'Scene language', value: 'Natural language' },
                     { label: 'Auto-analyze on open', value: 'Enabled' },

@@ -1,7 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { Camera, Download } from 'lucide-react';
 import UserDropdown from '../components/UserDropdown';
-import { createLocalId, MAX_BROWSER_IFC_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
+import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
+import {
+  BUILDING_ROLE_LABELS,
+  BUILDING_TYPES,
+  DEFAULT_BUILDING_ROLES,
+  DEFAULT_SURROUNDINGS_RULES,
+} from '../lib/building-rules';
+import { inspectReference, REFERENCE_PALETTE_VERSION, rolesFromPalette } from '../lib/reference-palette';
 
 const IfcViewer = lazy(() => import('../components/IfcViewer'));
 
@@ -29,10 +36,9 @@ async function uploadAsset(projectId, kind, file) {
     const source = await file.text();
     const faceCount = countStepEntities(source, '=\\s*IFC(?:ADVANCED)?FACE(?:BOUND|OUTERBOUND)?\\s*\\(');
     const pointCount = countStepEntities(source, '=\\s*IFCCARTESIANPOINT\\s*\\(');
-    geometryComplexity = { faceCount, pointCount, tooComplex: faceCount > 60000 || pointCount > 75000 };
+    geometryComplexity = { faceCount, pointCount, tooComplex: false };
   }
-  const previewBlocked = kind === 'model'
-    && (file.size > MAX_BROWSER_IFC_BYTES || geometryComplexity?.tooComplex);
+  const previewBlocked = false;
   const previewWarning = previewBlocked
     ? geometryComplexity?.tooComplex
       ? `Preview blocked: ${geometryComplexity.faceCount.toLocaleString()} faces and ${geometryComplexity.pointCount.toLocaleString()} points exceed the browser limit.`
@@ -77,80 +83,25 @@ async function uploadAsset(projectId, kind, file) {
   }
 }
 
-function inspectReference(url) {
-  return new Promise((resolve) => {
-    const image = new Image();
-    image.onload = () => {
-      try {
-        const canvas = document.createElement('canvas');
-        canvas.width = 32;
-        canvas.height = 32;
-        const context = canvas.getContext('2d', { willReadFrequently: true });
-        context.drawImage(image, 0, 0, 32, 32);
-        const pixels = context.getImageData(0, 0, 32, 32).data;
-        let greenPixels = 0;
-        let totalGreen = 0;
-        let totalRed = 0;
-        let totalBlue = 0;
-        const colorBuckets = new Map();
-        for (let index = 0; index < pixels.length; index += 4) {
-          const red = pixels[index];
-          const green = pixels[index + 1];
-          const blue = pixels[index + 2];
-          totalRed += red;
-          totalGreen += green;
-          totalBlue += blue;
-          if (green > red * 1.02 && green > blue * 0.96 && green > 28) greenPixels += 1;
-          const bucketKey = `${red >> 5}:${green >> 5}:${blue >> 5}`;
-          const bucket = colorBuckets.get(bucketKey) || { red: 0, green: 0, blue: 0, count: 0 };
-          bucket.red += red;
-          bucket.green += green;
-          bucket.blue += blue;
-          bucket.count += 1;
-          colorBuckets.set(bucketKey, bucket);
-        }
-        const count = pixels.length / 4;
-        const palette = [...colorBuckets.values()]
-          .sort((first, second) => second.count - first.count)
-          .slice(0, 6)
-          .map((bucket) => `#${[bucket.red, bucket.green, bucket.blue].map((value) => Math.round(value / bucket.count).toString(16).padStart(2, '0')).join('')}`);
-        resolve({
-          greenery: greenPixels / count > 0.012,
-          color: `#${[totalRed, totalGreen, totalBlue].map((value) => Math.round(value / count).toString(16).padStart(2, '0')).join('')}`,
-          palette,
-        });
-      } catch {
-        resolve({ greenery: false, color: '#aeb9c0', palette: [] });
-      }
-    };
-    image.onerror = () => resolve({ greenery: false, color: '#aeb9c0', palette: [] });
-    image.src = url;
-  });
-}
-
-function inferContext(prompt, referenceHasGreenery) {
+function inferEnvironment(prompt) {
   const text = prompt.toLowerCase();
-  const promptTrees = /\b(tree|trees|woodland|forest|orchard|park)\b/.test(text);
-  const promptShrubs = /\b(shrub|shrubs|bush|bushes|hedge|planting|garden|landscape|courtyard)\b/.test(text);
-  const trees = promptTrees || referenceHasGreenery;
-  const shrubs = promptShrubs || referenceHasGreenery;
-  const cars = /\b(car|cars|vehicle|vehicles|driveway|parking|garage)\b/.test(text);
   let environment = 'clear';
   if (/\b(overcast|cloudy|cloud|diffuse)\b/.test(text)) environment = 'overcast';
   else if (/\b(golden hour|sunset|dusk|warm evening)\b/.test(text)) environment = 'golden';
   else if (/\b(blue hour|night|twilight)\b/.test(text)) environment = 'blue';
-  return {
-    trees,
-    shrubs,
-    cars,
-    grass: true,
-    environment,
-    sources: {
-      trees: [promptTrees && 'prompt', referenceHasGreenery && 'reference greenery'].filter(Boolean).join(' + ') || 'not suggested',
-      shrubs: [promptShrubs && 'prompt', referenceHasGreenery && 'reference greenery'].filter(Boolean).join(' + ') || 'not suggested',
-      cars: cars ? 'prompt' : 'not suggested',
-    },
-  };
+  return environment;
+}
+
+function summarizeDetectedModelParts(analysis) {
+  const counts = { walls: 0, roofs: 0, windows: 0 };
+  for (const element of Object.values(analysis?.elementMetadata || {})) {
+    const type = String(element.type || '').toUpperCase();
+    if (/IFCWINDOW|IFCCURTAINWALL/.test(type)) counts.windows += 1;
+    else if (/IFCROOF/.test(type)) counts.roofs += 1;
+    else if (/IFCWALL/.test(type)) counts.walls += 1;
+  }
+  return Object.entries(counts).filter(([, count]) => count > 0)
+    .map(([role, count]) => `${count} ${role}`).join(' · ');
 }
 
 export default function Workspace({ project, onUpdateProject, onNavigate }) {
@@ -165,14 +116,19 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [rendering, setRendering] = useState(false);
   const [activeRenderId, setActiveRenderId] = useState(project.renders?.at(-1)?.id || null);
   const [captureRequest, setCaptureRequest] = useState(null);
-  const [camera, setCamera] = useState('isometric');
-  const [modelUpAxis, setModelUpAxis] = useState('auto');
-  const [lighting, setLighting] = useState('daylight');
-  const [materialStyle, setMaterialStyle] = useState(project.referenceAsset ? 'reference' : 'source');
+  const [camera, setCamera] = useState(project.sceneContext?.camera || 'isometric');
+  const [modelUpAxis, setModelUpAxis] = useState(project.sceneContext?.upAxis || 'auto');
+  const [lighting, setLighting] = useState(project.sceneContext?.lighting || 'daylight');
+  const [materialStyle, setMaterialStyle] = useState(project.referenceAsset ? 'reference' : (project.sceneContext?.materialStyle || 'source'));
   const [sceneOverrides, setSceneOverrides] = useState(project.sceneContext?.overrides || {});
   const [environment, setEnvironment] = useState(project.sceneContext?.environment || 'auto');
   const [groundStyle, setGroundStyle] = useState(project.sceneContext?.ground || 'grass');
   const [referenceHints, setReferenceHints] = useState(null);
+  const [referenceRoles, setReferenceRoles] = useState({ ...DEFAULT_BUILDING_ROLES, ...(project.sceneContext?.buildingRoles || {}) });
+  const [paletteReferenceId, setPaletteReferenceId] = useState(project.sceneContext?.paletteReferenceId || null);
+  const [ifcAnalysis, setIfcAnalysis] = useState(project.ifcAnalysis || null);
+  const [surroundingsRules, setSurroundingsRules] = useState(() => ({ ...DEFAULT_SURROUNDINGS_RULES, ...(project.sceneContext?.surroundingsRules || {}) }));
+  const [layoutSeed, setLayoutSeed] = useState(project.sceneContext?.layoutSeed || 19);
   const [notice, setNotice] = useState('');
   const renders = (project.renders || [])
     .filter((render) => render.resultAssetId || render.localId)
@@ -180,28 +136,105 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const activeRender = renders.find((render) => render.id === activeRenderId);
   const model = project.modelAsset?.kind === 'ifc' ? project.modelAsset : null;
   const referenceName = referenceAsset?.filename || '';
-  const inferredContext = useMemo(() => inferContext(prompt, referenceHints?.greenery || false), [prompt, referenceHints]);
-  const sceneObjects = useMemo(() => ({ ...inferredContext, ...sceneOverrides }), [inferredContext, sceneOverrides]);
-  const resolvedEnvironment = environment === 'auto' ? inferredContext.environment : environment;
+  const inferredEnvironment = useMemo(() => inferEnvironment(prompt), [prompt]);
+  const selectedBuildingType = ifcAnalysis?.buildingType?.type || 'other';
+  const detectedModelParts = useMemo(() => summarizeDetectedModelParts(ifcAnalysis), [ifcAnalysis]);
+  const resolvedSurroundingsRules = useMemo(() => Object.fromEntries(BUILDING_TYPES.map(({ id }) => [
+    id,
+    { ...DEFAULT_SURROUNDINGS_RULES[id], ...(surroundingsRules[id] || {}) },
+  ])), [surroundingsRules]);
+  const selectedRule = resolvedSurroundingsRules[selectedBuildingType] || resolvedSurroundingsRules.other;
+  const sceneObjects = useMemo(() => ({
+    trees: sceneOverrides.trees ?? true,
+    shrubs: sceneOverrides.shrubs ?? true,
+    cars: sceneOverrides.cars ?? Boolean(selectedRule.vehicles?.length),
+    people: sceneOverrides.people ?? true,
+    boundary: sceneOverrides.boundary ?? true,
+    paths: sceneOverrides.paths ?? true,
+    grass: sceneOverrides.grass ?? true,
+  }), [sceneOverrides, selectedRule.vehicles]);
+  const resolvedEnvironment = environment === 'auto' ? inferredEnvironment : environment;
   const savedContext = activeRender?.presentation?.context_objects;
   const savedContextLabel = savedContext
-    ? [savedContext.trees && 'trees', savedContext.shrubs && 'shrubs', savedContext.cars && 'car', savedContext.grass && 'grass'].filter(Boolean).join(' · ')
+    ? [savedContext.trees && 'trees', savedContext.shrubs && 'shrubs', savedContext.people && 'people', savedContext.cars && 'vehicles', savedContext.paths && 'paths', savedContext.boundary && 'boundary', savedContext.grass && 'ground'].filter(Boolean).join(' · ')
     : 'no context props';
   const readyToRender = Boolean(model?.id && modelReady && referenceAsset?.id && prompt.trim() && !rendering && !uploading);
 
   useEffect(() => {
     setPrompt(project.prompt || project.direction || '');
     setReferenceAsset(project.referenceAsset || null);
-    setMaterialStyle(project.referenceAsset ? 'reference' : 'source');
+    setCamera(project.sceneContext?.camera || 'isometric');
+    setLighting(project.sceneContext?.lighting || 'daylight');
+    setMaterialStyle(project.referenceAsset ? 'reference' : (project.sceneContext?.materialStyle || 'source'));
     setSceneOverrides(project.sceneContext?.overrides || {});
     setEnvironment(project.sceneContext?.environment || 'auto');
     setGroundStyle(project.sceneContext?.ground || 'grass');
     setModelUpAxis(project.sceneContext?.upAxis || 'auto');
     setModelReady(false);
+    setIfcAnalysis(project.ifcAnalysis || null);
+    setReferenceRoles({ ...DEFAULT_BUILDING_ROLES, ...(project.sceneContext?.buildingRoles || {}) });
+    setPaletteReferenceId(project.sceneContext?.paletteReferenceId || null);
+    setSurroundingsRules({ ...DEFAULT_SURROUNDINGS_RULES, ...(project.sceneContext?.surroundingsRules || {}) });
+    setLayoutSeed(project.sceneContext?.layoutSeed || 19);
     setActiveRenderId(project.renders?.at(-1)?.id || null);
     setCaptureRequest(null);
     setRendering(false);
     setNotice('');
+  }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncServerData = async () => {
+      try {
+        const [assetsRes, jobsRes] = await Promise.all([
+          fetch(`/api/projects/${encodeURIComponent(project.id)}/assets`, { signal: AbortSignal.timeout(3000) }).catch(() => null),
+          fetch(`/api/projects/${encodeURIComponent(project.id)}/render-jobs`, { signal: AbortSignal.timeout(3000) }).catch(() => null),
+        ]);
+        if (cancelled) return;
+        const updates = {};
+        if (assetsRes?.ok) {
+          const assets = await assetsRes.json().catch(() => []);
+          const ifcAsset = assets.find((a) => a.kind === 'ifc');
+          const refAsset = assets.find((a) => a.kind === 'reference');
+          if (ifcAsset && !project.modelAsset) updates.modelAsset = ifcAsset;
+          if (refAsset && !project.referenceAsset) updates.referenceAsset = refAsset;
+        }
+        if (jobsRes?.ok) {
+          const jobs = await jobsRes.json().catch(() => []);
+          const existingIds = new Set((project.renders || []).map((r) => r.id));
+          const completedJobs = jobs
+            .filter((j) => j.status === 'complete' && j.result_asset_id && !existingIds.has(j.id))
+            .map((j, idx) => ({
+              id: j.id,
+              name: `Render ${(project.renders?.length || 0) + idx + 1}`,
+              prompt: j.prompt,
+              modelName: project.modelAsset?.filename || 'IFC model',
+              referenceName: project.referenceAsset?.filename || 'Reference image',
+              modelAssetId: j.model_asset_id,
+              modelSha256: j.model_sha256,
+              resultAssetId: j.result_asset_id,
+              url: j.result_url,
+              meshCount: 0,
+              presentation: j.presentation,
+              createdAt: j.created_at,
+              localOnly: false,
+            }));
+          if (completedJobs.length > 0) {
+            updates.renders = [...(project.renders || []), ...completedJobs];
+          }
+        }
+        if (!cancelled && Object.keys(updates).length > 0) {
+          onUpdateProject(updates);
+          if (updates.referenceAsset && !referenceAsset) {
+            setReferenceAsset(updates.referenceAsset);
+          }
+        }
+      } catch {
+        // Offline or API unavailable
+      }
+    };
+    syncServerData();
+    return () => { cancelled = true; };
   }, [project.id]);
 
   useEffect(() => {
@@ -230,30 +263,79 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       setReferenceHints(null);
       return undefined;
     }
-    inspectReference(referenceAsset.url).then((hints) => {
-      if (!cancelled) setReferenceHints(hints);
+    const inspect = async () => {
+      const localBlob = referenceAsset.localId
+        ? await getLocalAssetBlob(referenceAsset.localId).catch(() => null)
+        : null;
+      return inspectReference(localBlob || referenceAsset.url);
+    };
+    inspect().then((hints) => {
+      if (cancelled) return;
+      setReferenceHints(hints);
+      const storedRoles = project.sceneContext?.buildingRoles || {};
+      if (referenceAsset.id !== paletteReferenceId || project.sceneContext?.referencePaletteVersion !== REFERENCE_PALETTE_VERSION || !storedRoles.glazing) {
+        const roles = { ...rolesFromPalette(hints.palette), ...storedRoles };
+        setReferenceRoles(roles);
+        setMaterialStyle('reference');
+        setPaletteReferenceId(referenceAsset.id);
+        setActiveRenderId(null);
+        onUpdateProject({ sceneContext: { ...project.sceneContext, buildingRoles: roles, paletteReferenceId: referenceAsset.id, referencePaletteVersion: REFERENCE_PALETTE_VERSION, materialStyle: 'reference' } });
+      }
     });
     return () => { cancelled = true; };
-  }, [referenceAsset?.url]);
+  }, [onUpdateProject, paletteReferenceId, project.sceneContext, referenceAsset?.id, referenceAsset?.url]);
 
-  const setContextObject = (object, enabled) => {
-    const overrides = { ...sceneOverrides, [object]: enabled };
-    setSceneOverrides(overrides);
-    onUpdateProject({ sceneContext: { environment, ground: groundStyle, upAxis: modelUpAxis, overrides } });
+  const setCameraPreference = (value) => {
+    setCamera(value);
+    onUpdateProject({ sceneContext: { ...project.sceneContext, camera: value, lighting, materialStyle, environment, ground: groundStyle, upAxis: modelUpAxis, overrides: sceneOverrides } });
+  };
+
+  const setLightingPreference = (value) => {
+    setLighting(value);
+    onUpdateProject({ sceneContext: { ...project.sceneContext, camera, lighting: value, materialStyle, environment, ground: groundStyle, upAxis: modelUpAxis, overrides: sceneOverrides } });
+  };
+
+  const setMaterialStylePreference = (value) => {
+    setMaterialStyle(value);
+    setActiveRenderId(null);
+    onUpdateProject({ sceneContext: { ...project.sceneContext, camera, lighting, materialStyle: value, environment, ground: groundStyle, upAxis: modelUpAxis, overrides: sceneOverrides } });
   };
 
   const setEnvironmentPreference = (value) => {
     setEnvironment(value);
-    onUpdateProject({ sceneContext: { environment: value, ground: groundStyle, upAxis: modelUpAxis, overrides: sceneOverrides } });
+    onUpdateProject({ sceneContext: { ...project.sceneContext, camera, lighting, materialStyle, environment: value, ground: groundStyle, upAxis: modelUpAxis, overrides: sceneOverrides } });
   };
 
   const setGroundPreference = (value) => {
     setGroundStyle(value);
-    onUpdateProject({ sceneContext: { environment, ground: value, upAxis: modelUpAxis, overrides: sceneOverrides } });
+    onUpdateProject({ sceneContext: { ...project.sceneContext, camera, lighting, materialStyle, environment, ground: value, upAxis: modelUpAxis, overrides: sceneOverrides } });
   };
+
+  const setContextObject = (key, enabled) => {
+    const overrides = { ...sceneOverrides, [key]: enabled };
+    setSceneOverrides(overrides);
+    setActiveRenderId(null);
+    onUpdateProject({ sceneContext: { ...project.sceneContext, overrides } });
+  };
+
+  const saveRoleAssignments = (roles) => {
+    setReferenceRoles(roles);
+    setMaterialStyle('reference');
+    setActiveRenderId(null);
+    onUpdateProject({ sceneContext: { ...project.sceneContext, buildingRoles: roles, materialStyle: 'reference' } });
+  };
+
+  const updateBuildingRole = (role, color) => saveRoleAssignments({ ...referenceRoles, [role]: color });
+
+  const handleViewerReady = useCallback(({ analysis }) => {
+    setModelReady(true);
+    setIfcAnalysis(analysis);
+    onUpdateProject({ ifcAnalysis: analysis });
+  }, [onUpdateProject]);
 
   useEffect(() => {
     setModelReady(false);
+    setIfcAnalysis(null);
   }, [model?.id]);
 
   const handleModelUpload = async (event) => {
@@ -266,7 +348,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       return;
     }
     if (file.size > 300 * 1024 * 1024) {
-      setNotice('IFC files must be smaller than 300 MiB to upload. Browser previews are limited to 16 MiB.');
+      setNotice('IFC files must be smaller than 300 MiB to upload.');
       event.target.value = '';
       return;
     }
@@ -274,7 +356,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     setNotice(`Uploading ${file.name} to the local IFC service…`);
     try {
       const asset = await uploadAsset(project.id, 'model', file);
-      onUpdateProject({ modelAsset: asset, renders: [] });
+      onUpdateProject({ modelAsset: asset, ifcAnalysis: null, renders: [] });
       setActiveRenderId(null);
       setNotice(asset.uploadError
         ? `${asset.filename} · ${asset.uploadError}`
@@ -298,7 +380,12 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       const asset = await uploadAsset(project.id, 'reference', file);
       setReferenceAsset(asset);
       setMaterialStyle('reference');
-      onUpdateProject({ referenceAsset: asset });
+      setPaletteReferenceId(null);
+      setActiveRenderId(null);
+      onUpdateProject({
+        referenceAsset: asset,
+        sceneContext: { ...project.sceneContext, materialStyle: 'reference' },
+      });
       setNotice(asset.localOnly
         ? `${asset.filename} saved on this device · local API unavailable.`
         : `${asset.filename} saved as this project's reference and cached for offline use.`);
@@ -347,12 +434,19 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
             lighting,
             material_style: materialStyle,
             reference_palette: referenceHints?.palette || [],
+            building_roles: referenceRoles,
+            building_type: selectedBuildingType,
+            surroundings_rules: resolvedSurroundingsRules,
+            layout_seed: layoutSeed,
             environment: resolvedEnvironment,
             ground: groundStyle,
             context_objects: {
               trees: Boolean(sceneObjects.trees),
               shrubs: Boolean(sceneObjects.shrubs),
               cars: Boolean(sceneObjects.cars),
+              people: Boolean(sceneObjects.people),
+              boundary: Boolean(sceneObjects.boundary),
+              paths: Boolean(sceneObjects.paths),
               grass: Boolean(sceneObjects.grass),
             },
           },
@@ -389,8 +483,14 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     generateRender();
   };
 
-  const handleViewerCapture = useCallback(async (jobId, imageBlob, meshCount, dimensions) => {
+  const handleViewerCapture = useCallback(async (jobId, imageBlob, meshCount, dimensions, error) => {
     if (!model || !captureRequest || captureRequest.id !== jobId) return;
+    if (error || !imageBlob) {
+      setRendering(false);
+      setCaptureRequest(null);
+      setNotice(error?.message || 'Render capture failed.');
+      return;
+    }
     const localAsset = await saveLocalAsset(
       project.id,
       'render',
@@ -427,8 +527,28 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
         localId: localAsset.localId,
         url: localAsset.url,
         meshCount,
-        presentation: { camera, lighting, material_style: materialStyle, environment: resolvedEnvironment, ground: groundStyle },
+        presentation: {
+          camera,
+          lighting,
+          material_style: materialStyle,
+          building_roles: referenceRoles,
+          building_type: selectedBuildingType,
+          surroundings_rules: resolvedSurroundingsRules,
+          layout_seed: layoutSeed,
+          environment: resolvedEnvironment,
+          ground: groundStyle,
+          context_objects: {
+            trees: Boolean(sceneObjects.trees),
+            shrubs: Boolean(sceneObjects.shrubs),
+            cars: Boolean(sceneObjects.cars),
+            people: Boolean(sceneObjects.people),
+            boundary: Boolean(sceneObjects.boundary),
+            paths: Boolean(sceneObjects.paths),
+            grass: Boolean(sceneObjects.grass),
+          },
+        },
         createdAt: new Date().toISOString(),
+        localOnly: true,
       });
       return;
     }
@@ -458,6 +578,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
         meshCount,
         presentation: completed.presentation,
         createdAt: completed.created_at,
+        localOnly: false,
       };
       onUpdateProject({
         prompt: prompt.trim(),
@@ -469,11 +590,11 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       setCaptureRequest(null);
       setRendering(false);
       setNotice(`Render saved · ${meshCount.toLocaleString()} IFC meshes · source hash verified.`);
-    } catch (error) {
+    } catch (apiError) {
       fetch(`/api/render-jobs/${jobId}/fail`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ error: error.message || 'Render result could not be saved.' }),
+        body: JSON.stringify({ error: apiError.message || 'Render result could not be saved.' }),
       }).catch(() => {});
       if (localAsset) {
         saveRenderToProject({
@@ -488,16 +609,36 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           localId: localAsset.localId,
           url: localAsset.url,
           meshCount,
-          presentation: { camera, lighting, material_style: materialStyle, environment: resolvedEnvironment, ground: groundStyle },
+          presentation: {
+            camera,
+            lighting,
+            material_style: materialStyle,
+            building_roles: referenceRoles,
+            building_type: selectedBuildingType,
+            surroundings_rules: resolvedSurroundingsRules,
+            layout_seed: layoutSeed,
+            environment: resolvedEnvironment,
+            ground: groundStyle,
+            context_objects: {
+              trees: Boolean(sceneObjects.trees),
+              shrubs: Boolean(sceneObjects.shrubs),
+              cars: Boolean(sceneObjects.cars),
+              people: Boolean(sceneObjects.people),
+              boundary: Boolean(sceneObjects.boundary),
+              paths: Boolean(sceneObjects.paths),
+              grass: Boolean(sceneObjects.grass),
+            },
+          },
           createdAt: new Date().toISOString(),
+          localOnly: true,
         });
       } else {
         setRendering(false);
         setCaptureRequest(null);
-        setNotice(error.message || 'The render result could not be saved.');
+        setNotice(apiError.message || 'The render result could not be saved.');
       }
     }
-  }, [camera, captureRequest, groundStyle, lighting, materialStyle, model, onUpdateProject, project.id, prompt, referenceName, renders, resolvedEnvironment]);
+  }, [camera, captureRequest, groundStyle, layoutSeed, lighting, materialStyle, model, onUpdateProject, project.id, prompt, referenceName, referenceRoles, renders, resolvedEnvironment, resolvedSurroundingsRules, sceneObjects, selectedBuildingType]);
 
   const addFeedback = (event) => {
     event.preventDefault();
@@ -510,10 +651,10 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
 
   const exportBrief = () => {
     const brief = [
-      `${project.name} — Visualization brief`,
-      `Client: ${project.client}`,
-      `Project type: ${project.type}`,
-      `Status: ${project.status}`,
+      `${project.name || 'Untitled Project'} — Visualization brief`,
+      `Client: ${project.client || 'New client'}`,
+      `Project type: ${project.type || 'Residential'}`,
+      `Status: ${project.status || 'In progress'}`,
       `Model: ${model?.filename || 'Not selected'}`,
       `Reference image: ${referenceName || 'Not selected'}`,
       '',
@@ -531,7 +672,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     const url = URL.createObjectURL(new Blob([brief], { type: 'text/plain' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-visualization-brief.txt`;
+    link.download = `${(project.name || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-visualization-brief.txt`;
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -541,7 +682,17 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
 
   const selectRender = (render) => {
     setActiveRenderId(render?.id || null);
-    if (render) setPrompt(render.prompt);
+    if (render) {
+      setPrompt(render.prompt);
+      if (render.presentation) {
+        if (render.presentation.camera) setCamera(render.presentation.camera);
+        if (render.presentation.lighting) setLighting(render.presentation.lighting);
+        if (render.presentation.material_style) setMaterialStyle(render.presentation.material_style);
+        if (render.presentation.environment) setEnvironment(render.presentation.environment);
+        if (render.presentation.ground) setGroundStyle(render.presentation.ground);
+        if (render.presentation.context_objects) setSceneOverrides(render.presentation.context_objects);
+      }
+    }
   };
 
   return (
@@ -607,7 +758,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         <div className="w-9 h-9 rounded-[4px] bg-sunken border border-line flex items-center justify-center text-accent text-[11px] shrink-0">3D</div>
                         <div className="min-w-0 flex-1">
                           <p className="text-ink text-[11px] truncate">{model.filename}</p>
-                          <p className="text-muted text-[9px] mt-1">{(model.size_bytes / (1024 * 1024)).toFixed(1)} MiB · {model.previewBlocked ? 'preview blocked' : modelReady ? 'geometry loaded' : 'loading geometry'}</p>
+                          <p className="text-muted text-[9px] mt-1">{((model.size_bytes || 0) / (1024 * 1024)).toFixed(1)} MiB · {model.previewBlocked ? 'preview blocked' : modelReady ? 'geometry loaded' : 'loading geometry'}</p>
                         </div>
                         <button onClick={() => { setModelReady(false); onUpdateProject({ modelAsset: null, renders: [] }); setActiveRenderId(null); }} aria-label="Remove model" className="text-muted hover:text-ink">×</button>
                       </div>
@@ -622,7 +773,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         {uploading ? 'Uploading…' : '+ Choose IFC file'}
                         <input type="file" accept=".ifc,application/x-step" onChange={handleModelUpload} className="sr-only" disabled={uploading} />
                       </label>
-                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">Preview &lt;= 16 MiB</span>
+                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">Preview &lt;= 300 MiB</span>
                     </div>
                   </section>
 
@@ -639,13 +790,26 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                       ↑ Upload reference image
                       <input type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" onChange={handleReferenceUpload} className="sr-only" disabled={uploading} />
                     </label>
+                    <div className="mt-3 flex flex-col gap-1.5">
+                      <p className="text-muted text-[9px] uppercase">Suggested reference palette · building + scene</p>
+                      {referenceHints?.palette?.length > 0
+                        ? <div className="flex items-center gap-1.5">{referenceHints.palette.map((color) => <span key={color} title={color} className="w-5 h-5 border border-line rounded-sm" style={{ backgroundColor: color }} />)}</div>
+                        : <p className="text-muted text-[9px]">{referenceHints?.error || (referenceAsset ? 'No usable colours found in the reference image.' : 'Upload a reference to suggest facade colours.')}</p>}
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {Object.entries(BUILDING_ROLE_LABELS).map(([role, label]) => <label key={role} className="flex items-center justify-between gap-1.5 text-[9px] text-ink-3">
+                          <span>{label}</span><input type="color" value={referenceRoles[role] || DEFAULT_BUILDING_ROLES[role]} onChange={(event) => updateBuildingRole(role, event.target.value)} className="w-7 h-6 p-0.5 bg-page border border-line rounded cursor-pointer" />
+                        </label>)}
+                      </div>
+                      {detectedModelParts && <p className="text-muted text-[9px]">IFC parts detected · {detectedModelParts}</p>}
+                      <p className="text-muted text-[9px]">Reference colours map to wall, roof, trim, door and window roles. Sampled foliage, bark, paving and vehicle tones also guide added scene objects with material-specific textures.</p>
+                    </div>
                   </section>
 
                   <section>
-                    <p className="text-muted text-[10px] uppercase mb-2">04 · Scene styling</p>
+                    <p className="text-muted text-[10px] uppercase mb-2">03 · Scene styling</p>
                     <div className="grid grid-cols-2 gap-2">
                       <label className="text-muted text-[9px] flex flex-col gap-1">Camera
-                        <select value={camera} onChange={(event) => setCamera(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
+                        <select value={camera} onChange={(event) => setCameraPreference(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
                           <option value="isometric">Isometric</option><option value="eye-level">Eye level</option><option value="top">Top</option>
                         </select>
                       </label>
@@ -653,19 +817,19 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         <select value={modelUpAxis} onChange={(event) => {
                           const upAxis = event.target.value;
                           setModelUpAxis(upAxis);
-                          onUpdateProject({ sceneContext: { ...project.sceneContext, environment, ground: groundStyle, upAxis, overrides: sceneOverrides } });
+                          onUpdateProject({ sceneContext: { ...project.sceneContext, camera, lighting, materialStyle, environment, ground: groundStyle, upAxis, overrides: sceneOverrides } });
                         }} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
                           <option value="auto">IFC metadata</option><option value="2">Z up</option><option value="1">Y up</option><option value="0">X up</option>
                         </select>
                       </label>
                       <label className="text-muted text-[9px] flex flex-col gap-1">Light
-                        <select value={lighting} onChange={(event) => setLighting(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
+                        <select value={lighting} onChange={(event) => setLightingPreference(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
                           <option value="daylight">Daylight</option><option value="overcast">Overcast</option><option value="golden">Golden hour</option><option value="blue">Blue hour</option>
                         </select>
                       </label>
                       <label className="text-muted text-[9px] flex flex-col gap-1 col-span-2">Environment
                         <select value={environment} onChange={(event) => setEnvironmentPreference(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
-                          <option value="auto">Match prompt · {inferredContext.environment}</option><option value="clear">Clear sky</option><option value="overcast">Overcast sky</option><option value="golden">Golden hour</option><option value="blue">Blue hour</option>
+                          <option value="auto">Match prompt · {inferredEnvironment}</option><option value="clear">Clear sky</option><option value="overcast">Overcast sky</option><option value="golden">Golden hour</option><option value="blue">Blue hour</option>
                         </select>
                       </label>
                       <label className="text-muted text-[9px] flex flex-col gap-1 col-span-2">Ground
@@ -674,29 +838,35 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         </select>
                       </label>
                       <label className="text-muted text-[9px] flex flex-col gap-1 col-span-2">Material appearance
-                        <select value={materialStyle} onChange={(event) => setMaterialStyle(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
+                        <select value={materialStyle} onChange={(event) => setMaterialStylePreference(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
                           <option value="reference">Reference palette</option><option value="source">IFC source colors</option><option value="warm">Warm stone</option><option value="timber">Timber</option><option value="concrete">Concrete</option>
                         </select>
                       </label>
                     </div>
-                    <div className="mt-3 flex flex-col gap-1.5">
+                    <div className="mt-3 border-t border-line pt-2">
+                      <p className="text-muted text-[9px] uppercase mb-1">Site objects · reference styled</p>
                       {[
                         { key: 'trees', label: 'Trees' },
-                        { key: 'shrubs', label: 'Bushes + shrubs' },
-                        { key: 'cars', label: 'Cars' },
+                        { key: 'shrubs', label: 'Shrubs' },
+                        { key: 'cars', label: 'Vehicles' },
+                        { key: 'people', label: 'People' },
+                        { key: 'boundary', label: 'Boundary / fence' },
+                        { key: 'paths', label: 'Paths' },
+                        { key: 'grass', label: 'Site ground' },
                       ].map(({ key, label }) => (
                         <label key={key} className="flex items-center justify-between gap-2 text-[10px] text-ink-3 py-1">
-                          <span>{label}<span className="text-muted ml-1.5">· {inferredContext.sources[key]}</span></span>
+                          <span>{label}</span>
                           <input type="checkbox" checked={Boolean(sceneObjects[key])} onChange={(event) => setContextObject(key, event.target.checked)} className="accent-[var(--c-primary)]" />
                         </label>
                       ))}
+                      <p className="text-muted text-[9px] leading-4">Added objects use the sampled reference palette and material textures. IFC geometry stays unchanged.</p>
                     </div>
                     <p className="text-muted text-[9px] leading-4 mt-2">Environment and props are presentation layers. Source IFC vertices, dimensions, and placements remain locked.</p>
                   </section>
 
                   <section>
                     <div className="flex items-center justify-between mb-2">
-                      <label htmlFor="render-prompt" className="text-muted text-[10px] uppercase">05 · Render prompt</label>
+                      <label htmlFor="render-prompt" className="text-muted text-[10px] uppercase">04 · Render prompt</label>
                       <span className="text-muted-2 text-[9px]">{prompt.length} / 1200</span>
                     </div>
                     <textarea id="render-prompt" maxLength={1200} value={prompt} onChange={(event) => setPrompt(event.target.value)} onBlur={() => onUpdateProject({ prompt, direction: prompt })} placeholder="Describe the light, materials, landscape, camera, and mood…" className="w-full h-[132px] resize-y bg-page border border-line rounded-[5px] p-3 text-ink-2 text-[11px] leading-[18px] outline-none focus:border-accent placeholder:text-muted-2" />
@@ -771,18 +941,22 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   lighting={lighting}
                   materialStyle={materialStyle}
                   upAxisPreference={modelUpAxis}
-                  referencePalette={referenceHints?.palette || []}
+                  referenceRoles={referenceRoles}
+                  referenceStyle={referenceHints?.contextStyle}
                   environment={resolvedEnvironment}
                   groundStyle={groundStyle}
                   contextObjects={sceneObjects}
-                  referenceColor={referenceHints?.color}
+                  buildingType={selectedBuildingType}
+                  surroundingsRules={resolvedSurroundingsRules}
+                  layoutSeed={layoutSeed}
+                  entrance={ifcAnalysis?.entrance}
                   captureRequest={captureRequest}
                   onStatus={setNotice}
-                  onReady={() => setModelReady(true)}
+                  onReady={handleViewerReady}
                   onCapture={handleViewerCapture}
                 />
               </Suspense>
-              {activeRender && <div className="absolute inset-0 z-10 pointer-events-none">
+              {activeRender && activeRender.url && <div className="absolute inset-0 z-10 pointer-events-none">
                 <img src={activeRender.url} alt={`Fixed-geometry IFC render ${activeRender.name}`} className="absolute inset-0 w-full h-full object-contain bg-page" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-transparent to-black/10" />
                 <div className="absolute top-3 left-3 bg-chip text-accent text-[9px] uppercase px-2 py-1 rounded-[3px]">IFC geometry rendered · {activeRender.meshCount?.toLocaleString()} meshes · {activeRender.localOnly ? 'saved locally' : 'SHA-256 verified'}</div>
@@ -791,12 +965,12 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   <span className="shrink-0 bg-black/45 text-white/80 text-[9px] px-2 py-1 rounded-[3px] hidden sm:block">{savedContextLabel} · context separate</span>
                 </div>
               </div>}
-              {modelReady && <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
-                <button onClick={captureSnapshot} disabled={!readyToRender} title={readyToRender ? 'Capture a new environment snapshot' : 'Add a prompt and required inputs before capturing'} aria-label="Capture a new environment snapshot" className="flex items-center gap-2 border border-white/20 bg-black/65 text-white px-3 py-2 rounded-[4px] text-[10px] hover:bg-black/80 disabled:opacity-50">
+              {(modelReady || activeRender?.url) && <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
+                {modelReady && <button onClick={captureSnapshot} disabled={!readyToRender} title={readyToRender ? 'Capture a new environment snapshot' : 'Add a prompt and required inputs before capturing'} aria-label="Capture a new environment snapshot" className="flex items-center gap-2 border border-white/20 bg-black/65 text-white px-3 py-2 rounded-[4px] text-[10px] hover:bg-black/80 disabled:opacity-50">
                   <Camera size={15} strokeWidth={1.8} />
                   <span>{rendering ? 'Capturing…' : 'Snapshot'}</span>
-                </button>
-                {activeRender && <a href={activeRender.url} download={`${project.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${activeRender.name.toLowerCase().replace(/\s+/g, '-')}.png`} title={`Download ${activeRender.name}`} aria-label={`Download ${activeRender.name}`} className="pointer-events-auto flex items-center justify-center border border-white/20 bg-black/65 text-white w-9 h-9 rounded-[4px] hover:bg-black/80">
+                </button>}
+                {activeRender?.url && <a href={activeRender.url} download={`${(project.name || 'render').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${(activeRender.name || 'render').toLowerCase().replace(/\s+/g, '-')}.png`} title={`Download ${activeRender.name}`} aria-label={`Download ${activeRender.name}`} className="pointer-events-auto flex items-center justify-center border border-white/20 bg-black/65 text-white w-9 h-9 rounded-[4px] hover:bg-black/80">
                   <Download size={15} strokeWidth={1.8} />
                 </a>}
               </div>}

@@ -66,15 +66,15 @@ export default function Subscription({ onNavigate }) {
                 <div className="flex items-center justify-between pb-1">
                   <span className="text-muted text-[11px]">Renders used</span>
                   <strong className="text-ink text-[12px] sm:text-[13px] font-normal">
-                    38 <span className="text-muted-2">/ 60 renders</span>
+                    38 <span className="text-muted-2">/ 300 renders</span>
                   </strong>
                 </div>
                 <div className="bg-sunken h-2 rounded-full overflow-clip">
-                  <div className="bg-primary h-full" style={{ width: '63%' }} />
+                  <div className="bg-primary h-full" style={{ width: '13%' }} />
                 </div>
                 <div className="flex items-center justify-between mt-1">
-                  <span className="text-muted text-[11px]">June 2025</span>
-                  <span className="text-muted text-[11px]">22 renders remaining</span>
+                  <span className="text-muted text-[11px]">Active cycle</span>
+                  <span className="text-muted text-[11px]">262 renders remaining</span>
                 </div>
               </div>
 
