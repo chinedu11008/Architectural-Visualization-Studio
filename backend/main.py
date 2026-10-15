@@ -5,6 +5,7 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import struct
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("LUMEN_DATA_DIR", BACKEND_DIR / ".data"))
 ASSET_DIR = DATA_DIR / "assets"
 DB_PATH = DATA_DIR / "lumen.sqlite3"
-MAX_IFC_BYTES = 300 * 1024 * 1024
+MAX_IFC_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 
@@ -138,16 +139,52 @@ def lookup_asset(asset_id: str) -> sqlite3.Row:
     return row
 
 
-def verify_asset(row: sqlite3.Row) -> Path:
-    path = ASSET_DIR / row["storage_name"]
-    if not path.is_file():
-        raise HTTPException(status_code=410, detail="Stored asset is missing")
+_asset_verification_cache: dict[str, tuple[int, int, int, int, str]] = {}
+_asset_verification_cache_lock = threading.RLock()
+
+
+def compute_file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(CHUNK_SIZE), b""):
             digest.update(chunk)
-    if digest.hexdigest() != row["sha256"]:
+    return digest.hexdigest()
+
+
+def verify_asset(row: sqlite3.Row) -> Path:
+    path = ASSET_DIR / row["storage_name"]
+    if not path.is_file():
+        raise HTTPException(status_code=410, detail="Stored asset is missing")
+    try:
+        stat = path.stat()
+    except OSError as error:
+        raise HTTPException(status_code=410, detail="Stored asset is unavailable") from error
+    key = str(path.resolve())
+    expected = row["sha256"]
+    metadata = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino, expected)
+    if stat.st_size != row["size_bytes"]:
+        with _asset_verification_cache_lock:
+            _asset_verification_cache.pop(key, None)
         raise HTTPException(status_code=409, detail="Asset integrity check failed")
+    with _asset_verification_cache_lock:
+        if _asset_verification_cache.get(key) == metadata:
+            return path
+
+    actual = compute_file_sha256(path)
+    try:
+        after = path.stat()
+    except OSError as error:
+        raise HTTPException(status_code=410, detail="Stored asset is unavailable") from error
+    if (after.st_size, after.st_mtime_ns, after.st_ctime_ns, after.st_ino) != metadata[:4]:
+        with _asset_verification_cache_lock:
+            _asset_verification_cache.pop(key, None)
+        raise HTTPException(status_code=409, detail="Asset changed during integrity check")
+    if actual != expected:
+        with _asset_verification_cache_lock:
+            _asset_verification_cache.pop(key, None)
+        raise HTTPException(status_code=409, detail="Asset integrity check failed")
+    with _asset_verification_cache_lock:
+        _asset_verification_cache[key] = metadata
     return path
 
 
@@ -204,6 +241,9 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
                 (asset_id, project_id, kind, filename, content_type, size, digest.hexdigest(), storage_name, created_at),
             )
             row = connection.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        stat = destination.stat()
+        with _asset_verification_cache_lock:
+            _asset_verification_cache[str(destination.resolve())] = (stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino, row["sha256"])
         return row
     except Exception:
         if destination.exists():
@@ -277,6 +317,7 @@ class PresentationSettings(BaseModel):
     layout_seed: int = Field(default=19, ge=1, le=2147483646)
     environment: Literal["clear", "overcast", "golden", "blue"] = "clear"
     ground: Literal["grass", "gravel", "paving"] = "grass"
+    visible_storey_id: str = Field(default="", max_length=100)
     context_objects: ContextObjectSettings = Field(default_factory=ContextObjectSettings)
 
 

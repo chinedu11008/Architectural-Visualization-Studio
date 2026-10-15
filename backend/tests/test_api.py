@@ -22,6 +22,7 @@ PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + b"\x00\x00\x00\x01\
 
 @pytest.fixture
 def api(tmp_path, monkeypatch):
+    main._asset_verification_cache.clear()
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "ASSET_DIR", tmp_path / "assets")
     monkeypatch.setattr(main, "DB_PATH", tmp_path / "test.sqlite3")
@@ -49,6 +50,16 @@ def test_health_declares_immutable_geometry_policy(api):
     assert response.json()["geometry_policy"] == "immutable"
 
 
+
+def test_ifc_api_upload_size_limit_is_64_mib(api, monkeypatch):
+    assert main.MAX_IFC_BYTES == 64 * 1024 * 1024
+    monkeypatch.setattr(main, "MAX_IFC_BYTES", len(IFC_BYTES) - 1)
+    response = api.post(
+        "/api/projects/test-project/assets/model",
+        files={"file": ("building.ifc", IFC_BYTES, "application/x-step")},
+    )
+    assert response.status_code == 413
+
 def test_uploads_are_hashed_read_only_assets(api):
     model, reference = upload_assets(api)
     assert model["sha256"] == hashlib.sha256(IFC_BYTES).hexdigest()
@@ -56,6 +67,20 @@ def test_uploads_are_hashed_read_only_assets(api):
     assert reference["kind"] == "reference"
     assert api.get(model["url"]).content == IFC_BYTES
 
+
+
+def test_asset_verification_hashes_once_per_file_metadata(api):
+    model, _ = upload_assets(api)
+    row = main.lookup_asset(model["id"])
+    path = main.ASSET_DIR / (model["id"] + ".ifc")
+    main._asset_verification_cache.pop(str(path.resolve()), None)
+
+    from unittest.mock import patch
+
+    with patch.object(main, "compute_file_sha256", wraps=main.compute_file_sha256) as hash_file:
+        assert main.verify_asset(row) == path
+        assert main.verify_asset(row) == path
+        assert hash_file.call_count == 1
 
 def test_render_job_only_accepts_presentation_settings(api):
     model, reference = upload_assets(api)
@@ -85,6 +110,7 @@ def test_render_job_only_accepts_presentation_settings(api):
                 },
             },
             "layout_seed": 721,
+            "visible_storey_id": "201",
         },
         "geometry": {"scale": 4},
     }
@@ -108,6 +134,7 @@ def test_render_job_only_accepts_presentation_settings(api):
     assert response.json()["presentation"]["building_type"] == "hospital"
     assert response.json()["presentation"]["surroundings_rules"]["hospital"]["vehicles"] == ["ambulance", "car"]
     assert response.json()["presentation"]["layout_seed"] == 721
+    assert response.json()["presentation"]["visible_storey_id"] == "201"
 
 
 def test_source_tampering_rejects_render_start(api):

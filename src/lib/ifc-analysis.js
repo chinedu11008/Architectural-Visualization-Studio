@@ -224,8 +224,22 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
   });
   const storeys = idsOf(api, modelId, 'IFCBUILDINGSTOREY').map((id) => {
     const line = getLine(api, modelId, id);
-    return { name: textField(line, 'Name') || `Storey ${id}`, elevation: unwrap(line?.Elevation) ?? null };
+    return { id, name: textField(line, 'Name') || ('Storey ' + id), elevation: unwrap(line?.Elevation) ?? null };
   });
+  const storeysById = new Map(storeys.map((storey) => [storey.id, storey]));
+  for (const relationshipId of idsOf(api, modelId, 'IFCRELCONTAINEDINSPATIALSTRUCTURE')) {
+    const relationship = getLine(api, modelId, relationshipId);
+    const storey = storeysById.get(refId(relationship?.RelatingStructure));
+    if (!storey) continue;
+    for (const related of relationship.RelatedElements || []) {
+      const elementId = refId(related);
+      const element = elements.get(elementId);
+      if (element) {
+        element.storeyId = storey.id;
+        element.storeyName = storey.name;
+      }
+    }
+  }
   const buildings = idsOf(api, modelId, 'IFCBUILDING').map((id) => {
     const line = getLine(api, modelId, id);
     return {
@@ -297,6 +311,8 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
       objectType: element.objectType,
       predefinedType: element.predefinedType,
       materials: element.materials,
+      storeyId: element.storeyId ?? null,
+      storeyName: element.storeyName ?? null,
     }])),
   };
 }

@@ -6,6 +6,28 @@ import Account from './pages/Account';
 import Subscription from './pages/Subscription';
 
 const STORAGE_KEY = 'lumen-field-projects-v1';
+const PROJECT_COVERS = {
+  'aster-house': '/project-covers/aster-house.svg',
+  brackwater: '/project-covers/brackwater.svg',
+  northline: '/project-covers/northline.svg',
+};
+
+function routeFromHash() {
+  const parts = window.location.hash.replace(/^#\/?/, '').split('/');
+  const page = ['signin', 'dashboard', 'workspace', 'account', 'subscription'].includes(parts[0]) ? parts[0] : 'dashboard';
+  if (page !== 'workspace') return { page };
+  try {
+    return { page, projectId: decodeURIComponent(parts[1] || '') };
+  } catch {
+    return { page: 'dashboard' };
+  }
+}
+
+function hashForRoute(route) {
+  return route.page === 'workspace'
+    ? '#/workspace/' + encodeURIComponent(route.projectId || '')
+    : '#/' + route.page;
+}
 
 const starterProjects = [
   {
@@ -15,7 +37,7 @@ const starterProjects = [
     type: 'Residential',
     status: 'In review',
     updated: 'Today',
-    image: 'https://images.unsplash.com/photo-1600210492486-724fe5c67fb0?auto=format&fit=crop&w=1400&q=85',
+    image: '/project-covers/aster-house.svg',
     direction: 'Quiet courtyard home in board-formed concrete. Late afternoon light, native grasses, and warm interior glow.',
     feedback: [],
     snapshots: 2,
@@ -27,7 +49,7 @@ const starterProjects = [
     type: 'Residential',
     status: 'In progress',
     updated: 'Yesterday',
-    image: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1400&q=85',
+    image: '/project-covers/brackwater.svg',
     direction: 'A low timber house settled into a coastal landscape. Overcast sky, weathered cedar, and a sheltered arrival.',
     feedback: [],
     snapshots: 1,
@@ -39,7 +61,7 @@ const starterProjects = [
     type: 'Workplace',
     status: 'Approved',
     updated: 'Sep 28',
-    image: 'https://images.unsplash.com/photo-1497366754035-f200968a6e72?auto=format&fit=crop&w=1400&q=85',
+    image: '/project-covers/northline.svg',
     direction: 'A shared studio organized around a generous worktable. Soft daylight, honest materials, and a little greenery.',
     feedback: [],
     snapshots: 4,
@@ -52,6 +74,9 @@ function readProjects() {
     const projects = stored ? JSON.parse(stored) : starterProjects;
     return projects.map((project) => ({
       ...project,
+      image: project.image?.startsWith('https://images.unsplash.com/')
+        ? (PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater)
+        : (project.image || PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater),
       feedback: Array.isArray(project.feedback) ? project.feedback : [],
       renders: Array.isArray(project.renders) ? project.renders : [],
       versions: Array.isArray(project.versions)
@@ -73,19 +98,36 @@ function readProjects() {
 }
 
 export default function App() {
-  const [page, setPage] = useState('dashboard');
+  const [route, setRoute] = useState(routeFromHash);
   const [projects, setProjects] = useState(readProjects);
-  const [activeProjectId, setActiveProjectId] = useState(projects[0]?.id);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(projects));
   }, [projects]);
 
-  const activeProject = projects.find((project) => project.id === activeProjectId) || projects[0];
+  useEffect(() => {
+    const syncRoute = () => setRoute(routeFromHash());
+    window.addEventListener('hashchange', syncRoute);
+    if (!window.location.hash) window.location.hash = hashForRoute(route);
+    return () => window.removeEventListener('hashchange', syncRoute);
+  }, []);
+
+  useEffect(() => {
+    const nextHash = hashForRoute(route);
+    if (window.location.hash !== nextHash) window.location.hash = nextHash;
+  }, [route]);
+
+  useEffect(() => {
+    if (route.page === 'workspace' && !projects.some((project) => project.id === route.projectId)) {
+      setRoute({ page: 'dashboard' });
+    }
+  }, [projects, route]);
+
+  const activeProject = projects.find((project) => project.id === route.projectId);
+  const page = route.page === 'workspace' && !activeProject ? 'dashboard' : route.page;
 
   const openProject = (id) => {
-    setActiveProjectId(id);
-    setPage('workspace');
+    setRoute({ page: 'workspace', projectId: id });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -97,7 +139,7 @@ export default function App() {
       type,
       status: 'In progress',
       updated: 'Just now',
-      image: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1400&q=85',
+      image: '/project-covers/brackwater.svg',
       referenceAsset: null,
       referenceName: 'Studio sample reference',
       modelAsset: null,
@@ -109,8 +151,7 @@ export default function App() {
       sceneContext: { environment: 'auto', ground: 'grass', upAxis: 'auto', overrides: {} },
     };
     setProjects((current) => [project, ...current]);
-    setActiveProjectId(project.id);
-    setPage('workspace');
+    setRoute({ page: 'workspace', projectId: project.id });
   };
 
   const updateProject = (id, changes) => {
@@ -121,7 +162,9 @@ export default function App() {
 
   const navigate = (target) => {
     if (['signin', 'dashboard', 'workspace', 'account', 'subscription'].includes(target)) {
-      setPage(target);
+      setRoute(target === 'workspace'
+        ? { page: target, projectId: route.projectId }
+        : { page: target });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };

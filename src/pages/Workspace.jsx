@@ -23,34 +23,16 @@ async function readApiResponse(response) {
   return data;
 }
 
-function countStepEntities(source, expression) {
-  const pattern = new RegExp(expression, 'gi');
-  let count = 0;
-  while (pattern.exec(source)) count += 1;
-  return count;
-}
-
 async function uploadAsset(projectId, kind, file) {
-  let geometryComplexity;
-  if (kind === 'model' && file.size <= MAX_BROWSER_IFC_BYTES) {
-    const source = await file.text();
-    const faceCount = countStepEntities(source, '=\\s*IFC(?:ADVANCED)?FACE(?:BOUND|OUTERBOUND)?\\s*\\(');
-    const pointCount = countStepEntities(source, '=\\s*IFCCARTESIANPOINT\\s*\\(');
-    geometryComplexity = { faceCount, pointCount, tooComplex: false };
-  }
-  const previewBlocked = false;
-  const previewWarning = previewBlocked
-    ? geometryComplexity?.tooComplex
-      ? `Preview blocked: ${geometryComplexity.faceCount.toLocaleString()} faces and ${geometryComplexity.pointCount.toLocaleString()} points exceed the browser limit.`
-      : 'Preview blocked: the IFC exceeds the 16 MiB browser limit.'
-    : '';
+  const previewBlocked = kind === 'model' && file.size > MAX_BROWSER_IFC_BYTES;
+  const previewWarning = previewBlocked ? 'Preview blocked: this IFC exceeds the 64 MiB browser preview limit.' : '';
   let localAsset;
   try {
     localAsset = await saveLocalAsset(projectId, kind, file);
   } catch {
     localAsset = null;
   }
-  if (kind === 'model' && file.size > 64 * 1024 * 1024) {
+  if (kind === 'model' && previewBlocked) {
     if (!localAsset) throw new Error('This IFC exceeds the browser upload limit and could not be stored locally.');
     return {
       ...localAsset,
@@ -127,6 +109,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [referenceRoles, setReferenceRoles] = useState({ ...DEFAULT_BUILDING_ROLES, ...(project.sceneContext?.buildingRoles || {}) });
   const [paletteReferenceId, setPaletteReferenceId] = useState(project.sceneContext?.paletteReferenceId || null);
   const [ifcAnalysis, setIfcAnalysis] = useState(project.ifcAnalysis || null);
+  const [visibleStoreyId, setVisibleStoreyId] = useState(project.sceneContext?.visibleStoreyId || '');
   const [surroundingsRules, setSurroundingsRules] = useState(() => ({ ...DEFAULT_SURROUNDINGS_RULES, ...(project.sceneContext?.surroundingsRules || {}) }));
   const [layoutSeed, setLayoutSeed] = useState(project.sceneContext?.layoutSeed || 19);
   const [notice, setNotice] = useState('');
@@ -172,6 +155,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     setModelUpAxis(project.sceneContext?.upAxis || 'auto');
     setModelReady(false);
     setIfcAnalysis(project.ifcAnalysis || null);
+    setVisibleStoreyId(project.sceneContext?.visibleStoreyId || '');
     setReferenceRoles({ ...DEFAULT_BUILDING_ROLES, ...(project.sceneContext?.buildingRoles || {}) });
     setPaletteReferenceId(project.sceneContext?.paletteReferenceId || null);
     setSurroundingsRules({ ...DEFAULT_SURROUNDINGS_RULES, ...(project.sceneContext?.surroundingsRules || {}) });
@@ -348,7 +332,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       return;
     }
     if (file.size > 300 * 1024 * 1024) {
-      setNotice('IFC files must be smaller than 300 MiB to upload.');
+      setNotice('IFC files larger than 300 MiB cannot be stored in the browser.');
       event.target.value = '';
       return;
     }
@@ -435,6 +419,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
             material_style: materialStyle,
             reference_palette: referenceHints?.palette || [],
             building_roles: referenceRoles,
+            visible_storey_id: visibleStoreyId,
             building_type: selectedBuildingType,
             surroundings_rules: resolvedSurroundingsRules,
             layout_seed: layoutSeed,
@@ -532,6 +517,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           lighting,
           material_style: materialStyle,
           building_roles: referenceRoles,
+          visible_storey_id: visibleStoreyId,
           building_type: selectedBuildingType,
           surroundings_rules: resolvedSurroundingsRules,
           layout_seed: layoutSeed,
@@ -589,7 +575,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
       setActiveRenderId(render.id);
       setCaptureRequest(null);
       setRendering(false);
-      setNotice(`Render saved · ${meshCount.toLocaleString()} IFC meshes · source hash verified.`);
+      setNotice(`Render saved · ${meshCount.toLocaleString()} IFC meshes · IFC file integrity verified.`);
     } catch (apiError) {
       fetch(`/api/render-jobs/${jobId}/fail`, {
         method: 'POST',
@@ -614,6 +600,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
             lighting,
             material_style: materialStyle,
             building_roles: referenceRoles,
+            visible_storey_id: visibleStoreyId,
             building_type: selectedBuildingType,
             surroundings_rules: resolvedSurroundingsRules,
             layout_seed: layoutSeed,
@@ -638,7 +625,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
         setNotice(apiError.message || 'The render result could not be saved.');
       }
     }
-  }, [camera, captureRequest, groundStyle, layoutSeed, lighting, materialStyle, model, onUpdateProject, project.id, prompt, referenceName, referenceRoles, renders, resolvedEnvironment, resolvedSurroundingsRules, sceneObjects, selectedBuildingType]);
+  }, [camera, captureRequest, groundStyle, visibleStoreyId, layoutSeed, lighting, materialStyle, model, onUpdateProject, project.id, prompt, referenceName, referenceRoles, renders, resolvedEnvironment, resolvedSurroundingsRules, sceneObjects, selectedBuildingType]);
 
   const addFeedback = (event) => {
     event.preventDefault();
@@ -690,6 +677,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
         if (render.presentation.material_style) setMaterialStyle(render.presentation.material_style);
         if (render.presentation.environment) setEnvironment(render.presentation.environment);
         if (render.presentation.ground) setGroundStyle(render.presentation.ground);
+        if (render.presentation.visible_storey_id !== undefined) setVisibleStoreyId(render.presentation.visible_storey_id || '');
         if (render.presentation.context_objects) setSceneOverrides(render.presentation.context_objects);
       }
     }
@@ -773,7 +761,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         {uploading ? 'Uploading…' : '+ Choose IFC file'}
                         <input type="file" accept=".ifc,application/x-step" onChange={handleModelUpload} className="sr-only" disabled={uploading} />
                       </label>
-                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">Preview &lt;= 300 MiB</span>
+                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">Preview &lt;= 64 MiB</span>
                     </div>
                   </section>
 
@@ -808,6 +796,16 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   <section>
                     <p className="text-muted text-[10px] uppercase mb-2">03 · Scene styling</p>
                     <div className="grid grid-cols-2 gap-2">
+                      {ifcAnalysis?.storeys?.length > 0 && <label className="text-muted text-[9px] flex flex-col gap-1 col-span-2">Visible floor
+                        <select value={visibleStoreyId} onChange={(event) => {
+                          const id = event.target.value;
+                          setVisibleStoreyId(id);
+                          onUpdateProject({ sceneContext: { ...project.sceneContext, visibleStoreyId: id } });
+                        }} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
+                          <option value="">All floors</option>
+                          {ifcAnalysis.storeys.map((storey) => <option key={storey.id} value={String(storey.id)}>{storey.name}</option>)}
+                        </select>
+                      </label>}
                       <label className="text-muted text-[9px] flex flex-col gap-1">Camera
                         <select value={camera} onChange={(event) => setCameraPreference(event.target.value)} className="bg-page border border-line rounded-[4px] px-2 py-2 text-ink-2 text-[10px] outline-none focus:border-accent">
                           <option value="isometric">Isometric</option><option value="eye-level">Eye level</option><option value="top">Top</option>
@@ -925,7 +923,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           <div className="border-b border-line flex items-center justify-between px-3 sm:px-4 py-2 bg-surface shrink-0 gap-2">
             <span className="text-muted-2 text-[10px] sm:text-[11px] truncate">{activeRender ? `${activeRender.name} · ${project.name}` : `IFC 3D view · ${project.name}`}</span>
             <div className="flex items-center gap-2 shrink-0">
-              <span className="hidden sm:inline text-muted text-[9px]">{activeRender ? (activeRender.localOnly ? 'Saved on this device' : 'Source hash verified') : modelReady ? 'IFC geometry loaded' : 'Ready for IFC'}</span>
+              <span className="hidden sm:inline text-muted text-[9px]">{activeRender ? (activeRender.localOnly ? 'Saved on this device' : 'IFC file integrity verified') : modelReady ? 'IFC geometry loaded' : 'Ready for IFC'}</span>
               <button onClick={exportBrief} aria-label="Export visualization brief" title="Export visualization brief" className="sm:hidden border border-line rounded-[4px] w-7 h-7 text-muted">↓</button>
               <button onClick={exportBrief} className="hidden sm:block border border-line rounded-[4px] px-2.5 py-1 text-muted text-[10px] hover:border-line-hover">↓ Export brief</button>
             </div>
@@ -950,6 +948,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   surroundingsRules={resolvedSurroundingsRules}
                   layoutSeed={layoutSeed}
                   entrance={ifcAnalysis?.entrance}
+                  visibleStoreyId={visibleStoreyId}
                   captureRequest={captureRequest}
                   onStatus={setNotice}
                   onReady={handleViewerReady}
@@ -959,7 +958,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
               {activeRender && activeRender.url && <div className="absolute inset-0 z-10 pointer-events-none">
                 <img src={activeRender.url} alt={`Fixed-geometry IFC render ${activeRender.name}`} className="absolute inset-0 w-full h-full object-contain bg-page" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/65 via-transparent to-black/10" />
-                <div className="absolute top-3 left-3 bg-chip text-accent text-[9px] uppercase px-2 py-1 rounded-[3px]">IFC geometry rendered · {activeRender.meshCount?.toLocaleString()} meshes · {activeRender.localOnly ? 'saved locally' : 'SHA-256 verified'}</div>
+                <div className="absolute top-3 left-3 bg-chip text-accent text-[9px] uppercase px-2 py-1 rounded-[3px]">IFC geometry rendered · {activeRender.meshCount?.toLocaleString()} meshes · {activeRender.localOnly ? 'saved locally' : 'IFC file integrity verified'}</div>
                 <div className="absolute bottom-3 left-3 right-3 sm:bottom-5 sm:left-5 sm:right-5 flex items-end justify-between gap-3">
                   <div className="min-w-0"><p className="text-white font-medium text-[12px] sm:text-[14px]">{activeRender.name} · {project.name}</p><p className="text-white/75 text-[10px] sm:text-[11px] line-clamp-2 mt-1">{activeRender.prompt}</p></div>
                   <span className="shrink-0 bg-black/45 text-white/80 text-[9px] px-2 py-1 rounded-[3px] hidden sm:block">{savedContextLabel} · context separate</span>
