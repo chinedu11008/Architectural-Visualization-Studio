@@ -7,6 +7,7 @@ import { getLocalAssetBlob, MAX_BROWSER_IFC_BYTES } from '../lib/local-assets';
 import { analyzeIfcModel, completeIfcAnalysis } from '../lib/ifc-analysis';
 import { makeRuleBasedContextLayer } from '../lib/context-layer';
 import { elementColorRole } from '../lib/element-roles';
+import { buildRoomFurnishings } from '../lib/room-furnishings';
 
 const materialPalettes = {
   source: null,
@@ -150,19 +151,114 @@ const skyPalettes = {
   blue: ['#081222', '#526c91'],
 };
 
-function makeSkyTexture(environment) {
+function smoothStep(edge0, edge1, value) {
+  const t = THREE.MathUtils.clamp((value - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function makeNoiseGrid(columns, rows, seed) {
+  let state = seed;
+  const values = new Float32Array(columns * rows);
+  for (let index = 0; index < values.length; index += 1) {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    values[index] = state / 4294967296;
+  }
+  return { columns, rows, values };
+}
+
+function sampleNoiseGrid(grid, u, v) {
+  const x = u * grid.columns;
+  const y = THREE.MathUtils.clamp(v, 0, 0.999999) * (grid.rows - 1);
+  const x0 = Math.floor(x) % grid.columns;
+  const x1 = (x0 + 1) % grid.columns;
+  const y0 = Math.floor(y);
+  const y1 = Math.min(y0 + 1, grid.rows - 1);
+  const tx = x - Math.floor(x);
+  const ty = y - y0;
+  const sx = tx * tx * (3 - 2 * tx);
+  const sy = ty * ty * (3 - 2 * ty);
+  const top = THREE.MathUtils.lerp(grid.values[y0 * grid.columns + x0], grid.values[y0 * grid.columns + x1], sx);
+  const bottom = THREE.MathUtils.lerp(grid.values[y1 * grid.columns + x0], grid.values[y1 * grid.columns + x1], sx);
+  return THREE.MathUtils.lerp(top, bottom, sy);
+}
+
+function makeSkyTexture(environment, referenceSky = {}) {
   const canvas = document.createElement('canvas');
-  canvas.width = 2;
-  canvas.height = 256;
-  const context = canvas.getContext('2d');
+  canvas.width = 768;
+  canvas.height = 384;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  const [paletteTop, paletteHorizon] = skyPalettes[environment] || skyPalettes.clear;
+  const referenceBlue = new THREE.Color(referenceSky.skyColor || paletteTop);
+  const horizonColor = new THREE.Color(paletteHorizon);
+  const topColor = referenceSky.skyColor
+    ? referenceBlue.clone().lerp(new THREE.Color(environment === 'blue' ? '#081222' : '#174b78'), environment === 'blue' ? 0.18 : 0.28)
+    : new THREE.Color(paletteTop);
+  const cloudColor = new THREE.Color(referenceSky.cloudColor || '#edf2f3');
   const gradient = context.createLinearGradient(0, 0, 0, canvas.height);
-  const colors = skyPalettes[environment] || skyPalettes.clear;
-  gradient.addColorStop(0, colors[0]);
-  gradient.addColorStop(1, colors[1]);
+  gradient.addColorStop(0, `#${topColor.getHexString()}`);
+  gradient.addColorStop(0.43, `#${referenceBlue.clone().lerp(horizonColor, 0.3).getHexString()}`);
+  gradient.addColorStop(0.68, `#${horizonColor.clone().lerp(cloudColor, 0.23).getHexString()}`);
+  gradient.addColorStop(1, `#${horizonColor.getHexString()}`);
   context.fillStyle = gradient;
   context.fillRect(0, 0, canvas.width, canvas.height);
+
+  const requestedCloudiness = Number(referenceSky.cloudiness);
+  const cloudiness = environment === 'overcast'
+    ? Math.max(0.78, Number.isFinite(requestedCloudiness) ? requestedCloudiness : 0.78)
+    : THREE.MathUtils.clamp(Number.isFinite(requestedCloudiness) ? requestedCloudiness : 0.38, 0.18, 0.88);
+  const grids = [
+    { grid: makeNoiseGrid(7, 5, 2027), weight: 0.48 },
+    { grid: makeNoiseGrid(15, 10, 7141), weight: 0.29 },
+    { grid: makeNoiseGrid(31, 19, 991), weight: 0.15 },
+    { grid: makeNoiseGrid(61, 35, 4421), weight: 0.08 },
+  ];
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  const cloudHex = cloudColor.getHex();
+  const cloudRgb = [(cloudHex >> 16) & 255, (cloudHex >> 8) & 255, cloudHex & 255];
+  const coverage = THREE.MathUtils.clamp(0.28 + cloudiness * 0.7, 0.38, 0.93);
+  const threshold = 0.83 - coverage * 0.47;
+  for (let y = 0; y < canvas.height; y += 1) {
+    const v = y / canvas.height;
+    const aboveHorizon = 1 - smoothStep(0.47, 0.57, v);
+    const cloudHeight = 0.38 + 0.62 * smoothStep(0.015, 0.17, v);
+    if (aboveHorizon < 0.005) continue;
+    for (let x = 0; x < canvas.width; x += 1) {
+      const u = x / canvas.width;
+      let noise = 0;
+      grids.forEach(({ grid, weight }) => { noise += sampleNoiseGrid(grid, u, v) * weight; });
+      const billow = noise + (sampleNoiseGrid(grids[1].grid, u + 0.035, v + 0.06) - 0.5) * 0.1;
+      const puff = smoothStep(threshold, threshold + 0.17, billow);
+      const alpha = puff * aboveHorizon * cloudHeight * (0.22 + coverage * 0.68);
+      if (alpha < 0.01) continue;
+      const pixel = (y * canvas.width + x) * 4;
+      image.data[pixel] = THREE.MathUtils.lerp(image.data[pixel], cloudRgb[0], alpha);
+      image.data[pixel + 1] = THREE.MathUtils.lerp(image.data[pixel + 1], cloudRgb[1], alpha);
+      image.data[pixel + 2] = THREE.MathUtils.lerp(image.data[pixel + 2], cloudRgb[2], alpha);
+    }
+  }
+  context.putImageData(image, 0, 0);
+
+  const sunX = canvas.width * 0.35;
+  const sunY = canvas.height * 0.2;
+  const glow = context.createRadialGradient(sunX, sunY, 2, sunX, sunY, canvas.width * 0.13);
+  glow.addColorStop(0, environment === 'golden' ? 'rgba(255,222,166,0.72)' : 'rgba(255,249,223,0.52)');
+  glow.addColorStop(0.18, environment === 'golden' ? 'rgba(255,211,151,0.26)' : 'rgba(255,248,227,0.19)');
+  glow.addColorStop(1, 'rgba(255,255,255,0)');
+  context.fillStyle = glow;
+  context.fillRect(sunX - canvas.width * 0.14, sunY - canvas.width * 0.14, canvas.width * 0.28, canvas.width * 0.28);
+  if (environment !== 'overcast') {
+    context.beginPath();
+    context.arc(sunX, sunY, environment === 'blue' ? 4 : 5.5, 0, Math.PI * 2);
+    context.fillStyle = environment === 'blue' ? '#dce7f8' : '#fff9e7';
+    context.shadowColor = environment === 'golden' ? '#ffd08a' : '#fff4d5';
+    context.shadowBlur = 16;
+    context.fill();
+    context.shadowBlur = 0;
+  }
+
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
   return texture;
 }
 
@@ -215,6 +311,83 @@ function getBuildingBounds(root) {
   return bounds;
 }
 
+function collectSpaceBounds(modelGroup) {
+  const boundsById = new Map();
+  modelGroup.updateWorldMatrix(true, true);
+  modelGroup.traverse((object) => {
+    if (!object.isMesh || String(object.userData.ifcType || '').toUpperCase() !== 'IFCSPACE') return;
+    const id = String(object.userData.ifcExpressID ?? '');
+    if (!id) return;
+    object.updateWorldMatrix(true, false);
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (bounds.isEmpty()) return;
+    const accumulated = boundsById.get(id);
+    if (accumulated) accumulated.union(bounds);
+    else boundsById.set(id, bounds);
+  });
+  return boundsById;
+}
+
+function collectFloorBounds(modelGroup, sourceToMeters = null) {
+  const slabs = [];
+  const modelBounds = new THREE.Box3().setFromObject(modelGroup);
+  const modelSize = modelBounds.getSize(new THREE.Vector3());
+  const modelExtent = Math.max(modelSize.x, modelSize.y, modelSize.z);
+  const metersPerUnit = Number.isFinite(sourceToMeters) && sourceToMeters > 0
+    ? sourceToMeters
+    : modelExtent > 150 ? 0.001 : 1;
+
+  modelGroup.updateWorldMatrix(true, true);
+  modelGroup.traverse((object) => {
+    if (!object.isMesh || String(object.userData.ifcType || '').toUpperCase() !== 'IFCSLAB') return;
+    const name = [object.userData.ifcName, object.userData.ifcObjectType, object.userData.ifcPredefinedType]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (/landing|roof|ceiling|ramp|parking|sidewalk/.test(name)) return;
+    if (!/floor|base.?slab|\.floor\./.test(name)) return;
+
+    object.updateWorldMatrix(true, false);
+    const bounds = new THREE.Box3().setFromObject(object);
+    if (bounds.isEmpty()) return;
+    const size = bounds.getSize(new THREE.Vector3());
+    const width = size.x * metersPerUnit;
+    const depth = size.y * metersPerUnit;
+    const thickness = size.z * metersPerUnit;
+    if (Math.min(width, depth) < 2.8 || width * depth < 8 || thickness > 0.9) return;
+    slabs.push({ bounds, storeyId: object.userData.storeyId ?? null });
+  });
+
+  const levels = [];
+  const levelTolerance = 0.55 / metersPerUnit;
+  for (const slab of slabs.sort((first, second) => first.bounds.max.z - second.bounds.max.z)) {
+    const level = levels.find((candidate) => Math.abs(candidate.floorZ - slab.bounds.max.z) <= levelTolerance);
+    if (level) {
+      level.bounds.union(slab.bounds);
+      level.floorZ = Math.max(level.floorZ, slab.bounds.max.z);
+      level.storeyId ??= slab.storeyId;
+    } else {
+      levels.push({ bounds: slab.bounds.clone(), floorZ: slab.bounds.max.z, storeyId: slab.storeyId });
+    }
+  }
+
+  return new Map(levels.map((level, index) => {
+    const bounds = level.bounds.clone();
+    bounds.min.z = level.floorZ;
+    bounds.max.z = level.floorZ + 2.8 / metersPerUnit;
+    return [String(level.storeyId ?? `estimated-floor-${index + 1}`), { bounds, storeyId: level.storeyId }];
+  }));
+}
+
+function disposePresentationGroup(group) {
+  const materials = new Set();
+  group.traverse((object) => {
+    if (!object.isMesh) return;
+    object.geometry?.dispose();
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    objectMaterials.forEach((material) => material && materials.add(material));
+  });
+  materials.forEach((material) => material.dispose());
+}
+
 function getSiteBounds(root, buildingBounds) {
   const siteBounds = new THREE.Box3();
   root.traverse((object) => {
@@ -235,13 +408,16 @@ function getSiteBounds(root, buildingBounds) {
   return containsBuildingWithMargin && largeEnough ? siteBounds : null;
 }
 
-export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', lighting = 'daylight', materialStyle = 'reference', upAxisPreference = 'auto', environment = 'clear', groundStyle = 'grass', contextObjects = {}, referenceRoles = {}, referenceStyle, buildingType = 'other', surroundingsRules = {}, layoutSeed = 1, entrance = null, visibleStoreyId = '', captureRequest, onStatus, onReady, onCapture }) {
+export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', lighting = 'daylight', materialStyle = 'reference', upAxisPreference = 'auto', environment = 'clear', groundStyle = 'grass', contextObjects = {}, referenceRoles = {}, referenceStyle, buildingType = 'other', surroundingsRules = {}, layoutSeed = 1, entrance = null, visibleStoreyId = '', interiorMode = false, captureRequest, onStatus, onReady, onCapture, onFurnishingsReady }) {
   const hostRef = useRef(null);
   const sceneRef = useRef(null);
   const cameraRef = useRef(null);
   const rendererRef = useRef(null);
   const controlsRef = useRef(null);
   const modelRef = useRef(null);
+  const roomSpacesRef = useRef([]);
+  const sourceToMetersRef = useRef(null);
+  const roomFurnishingsRef = useRef(null);
   const orientationRootRef = useRef(null);
   const sourceBoundsRef = useRef(null);
   const siteBoundsRef = useRef(null);
@@ -251,6 +427,7 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
   const contextLayoutSignatureRef = useRef(null);
   const cameraTargetRef = useRef(null);
   const skyTextureRef = useRef(null);
+  const skyDomeRef = useRef(null);
   const onStatusRef = useRef(onStatus);
   const onCaptureRef = useRef(onCapture);
   const [loadState, setLoadState] = useState(asset ? 'loading' : 'empty');
@@ -306,6 +483,8 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       const schema = api.GetModelSchema(modelId);
       const detectedUpAxis = detectIfcUpAxis(api, modelId);
       const ifcAnalysis = analyzeIfcModel(api, modelId);
+      roomSpacesRef.current = ifcAnalysis.spaces || [];
+      sourceToMetersRef.current = ifcAnalysis.units?.sourceToMeters ?? null;
       const elementMetadata = ifcAnalysis.elementMetadata || {};
 
       scene = new THREE.Scene();
@@ -318,6 +497,8 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       canvasRenderer.outputColorSpace = THREE.SRGBColorSpace;
       canvasRenderer.toneMapping = THREE.ACESFilmicToneMapping;
       canvasRenderer.toneMappingExposure = 1;
+      canvasRenderer.shadowMap.enabled = true;
+      canvasRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
       hostRef.current.replaceChildren(canvasRenderer.domElement);
       const orbit = new OrbitControls(cameraObject, canvasRenderer.domElement);
       controls = orbit;
@@ -335,11 +516,17 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       scene.add(orientationRoot);
       const keyLight = new THREE.DirectionalLight('#fff1d6', 2.2);
       keyLight.position.set(1, 1.8, 1.2);
+      keyLight.castShadow = true;
+      keyLight.shadow.mapSize.set(2048, 2048);
+      keyLight.shadow.bias = -0.00012;
+      keyLight.shadow.normalBias = 0.025;
+      keyLight.shadow.radius = 3;
       scene.add(keyLight);
       const fillLight = new THREE.DirectionalLight('#d8e2ef', 0.5);
       fillLight.position.set(-1.2, 0.8, -0.7);
       scene.add(fillLight);
       const ambient = new THREE.HemisphereLight('#eaf0f8', '#4d463d', 1.05);
+      ambient.position.set(0, 0, 100);
       scene.add(ambient);
 
       let placedMeshCount = 0;
@@ -355,16 +542,23 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
               const metadata = elementMetadata[flatMesh.expressID] || {};
               const role = elementColorRole(metadata);
               const object = new THREE.Mesh(geometry, getMeshMaterial(placed.color, materialStyle, referenceRoles, role, materialCache));
+              object.castShadow = true;
+              object.receiveShadow = true;
               object.name = `IFC element ${flatMesh.expressID}`;
               object.matrix.fromArray(placed.flatTransformation);
               object.matrixAutoUpdate = false;
               object.userData.ifcExpressID = flatMesh.expressID;
               object.userData.ifcType = metadata.type || '';
+              object.userData.ifcName = metadata.name || '';
+              object.userData.ifcObjectType = metadata.objectType || '';
+              object.userData.ifcPredefinedType = metadata.predefinedType || '';
               object.userData.storeyId = metadata.storeyId ?? null;
               object.userData.colorRole = role || '';
               object.userData.geometryPolicy = 'immutable';
               object.userData.sourceColor = new THREE.Color(placed.color.x, placed.color.y, placed.color.z).getHexString();
               object.userData.sourceOpacity = placed.color.w ?? 1;
+              // IfcSpace geometry is a room volume for analysis, not visible building fabric.
+              object.visible = metadata.type !== 'IFCSPACE';
               modelGroup.add(object);
               placedMeshCount += 1;
             } else {
@@ -399,6 +593,22 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       const center = bounds.getCenter(new THREE.Vector3());
       const size = bounds.getSize(new THREE.Vector3());
       const radius = Math.max(size.length() * 0.5, 0.5);
+      if (keyLight) {
+        keyLight.target.position.copy(center);
+        scene.add(keyLight.target);
+        keyLight.position.copy(center).add(new THREE.Vector3(1.05, -1.35, 1.7).normalize().multiplyScalar(radius * 2.4));
+        keyLight.shadow.camera.left = -radius * 1.65;
+        keyLight.shadow.camera.right = radius * 1.65;
+        keyLight.shadow.camera.top = radius * 1.65;
+        keyLight.shadow.camera.bottom = -radius * 1.65;
+        keyLight.shadow.camera.near = Math.max(0.1, radius * 0.02);
+        keyLight.shadow.camera.far = radius * 7;
+        keyLight.shadow.camera.updateProjectionMatrix();
+        keyLight.shadow.autoUpdate = false;
+        keyLight.shadow.needsUpdate = true;
+      }
+      if (fillLight) fillLight.position.copy(center).add(new THREE.Vector3(-1.2, 0.8, 0.6).normalize().multiplyScalar(radius * 2));
+      ambient.position.copy(center).add(new THREE.Vector3(0, 0, radius * 2));
       const siteBounds = getSiteBounds(orientationRoot, bounds);
       siteBoundsRef.current = siteBounds?.clone() || null;
       const mainEntrance = locateMainEntrance(modelGroup, bounds, elementMetadata);
@@ -436,6 +646,7 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       controlsRef.current = orbit;
       modelRef.current = modelGroup;
       orientationRootRef.current = orientationRoot;
+      roomFurnishingsRef.current = null;
       sourceBoundsRef.current = sourceBounds;
       detectedUpAxisRef.current = resolvedDetectedAxis;
       modelBoundsRef.current = bounds.clone();
@@ -496,6 +707,9 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       rendererRef.current = null;
       controlsRef.current = null;
       modelRef.current = null;
+      roomSpacesRef.current = [];
+      sourceToMetersRef.current = null;
+      roomFurnishingsRef.current = null;
       orientationRootRef.current = null;
       sourceBoundsRef.current = null;
       siteBoundsRef.current = null;
@@ -503,6 +717,7 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       modelBoundsRef.current = null;
       contextRef.current = null;
       contextLayoutSignatureRef.current = null;
+      skyDomeRef.current = null;
       skyTextureRef.current?.dispose();
       skyTextureRef.current = null;
     };
@@ -537,11 +752,30 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
         });
       });
     }
+    if (skyDomeRef.current) {
+      scene.remove(skyDomeRef.current);
+      skyDomeRef.current.geometry.dispose();
+      skyDomeRef.current.material.dispose();
+      skyDomeRef.current = null;
+    }
     skyTextureRef.current?.dispose();
-    skyTextureRef.current = makeSkyTexture(environment);
-    scene.background = skyTextureRef.current;
+    skyTextureRef.current = makeSkyTexture(environment, referenceStyle?.sky);
+    const skyColors = skyPalettes[environment] || skyPalettes.clear;
+    const skyHorizon = new THREE.Color(referenceStyle?.sky?.skyColor || skyColors[1]).lerp(new THREE.Color(skyColors[1]), referenceStyle?.sky?.skyColor ? 0.28 : 0);
+    scene.background = skyHorizon;
     const radius = cameraTargetRef.current.radius;
-    const fogColor = new THREE.Color((skyPalettes[environment] || skyPalettes.clear)[1]);
+    const skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(radius * 32, 120), 48, 32),
+      new THREE.MeshBasicMaterial({ map: skyTextureRef.current, side: THREE.BackSide, depthWrite: false, fog: false, toneMapped: false }),
+    );
+    skyDome.name = 'Procedural cloud sky';
+    skyDome.rotation.x = Math.PI / 2;
+    skyDome.position.copy(modelBoundsRef.current.getCenter(new THREE.Vector3()));
+    skyDome.renderOrder = -1000;
+    skyDome.frustumCulled = false;
+    skyDomeRef.current = skyDome;
+    scene.add(skyDome);
+    const fogColor = skyHorizon.clone();
     scene.fog = new THREE.Fog(fogColor, radius * 5, radius * 19);
     const contextGroup = makeRuleBasedContextLayer(modelBoundsRef.current, radius, {
       contextObjects,
@@ -557,6 +791,11 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
     });
     contextRef.current = contextGroup;
     scene.add(contextGroup);
+    contextGroup.traverse((object) => {
+      if (!object.isMesh) return;
+      object.castShadow = true;
+      object.receiveShadow = true;
+    });
     scene.updateMatrixWorld(true);
     const framingBounds = modelBoundsRef.current.clone();
     contextGroup.traverse((object) => {
@@ -567,6 +806,25 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
     const upAxis = 2;
     const framingRadius = Math.max(size.length() * 0.5, 0.5);
     cameraTargetRef.current = { center, radius: framingRadius, upAxis };
+    skyDome.scale.setScalar(Math.max(framingRadius / radius, 1));
+    skyDome.position.copy(center);
+    const keyLight = scene.children.find((child) => child.isDirectionalLight);
+    if (keyLight) {
+      keyLight.target.position.copy(center);
+      keyLight.position.copy(center).add(new THREE.Vector3(1.05, -1.35, 1.7).normalize().multiplyScalar(framingRadius * 2.4));
+      keyLight.shadow.camera.left = -framingRadius * 1.35;
+      keyLight.shadow.camera.right = framingRadius * 1.35;
+      keyLight.shadow.camera.top = framingRadius * 1.35;
+      keyLight.shadow.camera.bottom = -framingRadius * 1.35;
+      keyLight.shadow.camera.near = Math.max(0.1, framingRadius * 0.02);
+      keyLight.shadow.camera.far = framingRadius * 7;
+      keyLight.shadow.camera.updateProjectionMatrix();
+      keyLight.shadow.needsUpdate = true;
+    }
+    const fillLight = scene.children.filter((child) => child.isDirectionalLight)[1];
+    if (fillLight) fillLight.position.copy(center).add(new THREE.Vector3(-1.2, 0.8, 0.6).normalize().multiplyScalar(framingRadius * 2));
+    const hemisphere = scene.children.find((child) => child.isHemisphereLight);
+    if (hemisphere) hemisphere.position.copy(center).add(new THREE.Vector3(0, 0, framingRadius * 2));
     const cameraObject = cameraRef.current;
     const controls = controlsRef.current;
     if (cameraObject && controls) {
@@ -587,12 +845,48 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
   }, [buildingType, contextObjects, entrance, environment, groundStyle, layoutSeed, loadState, referenceRoles, referenceStyle, surroundingsRules, upAxisPreference]);
 
   useEffect(() => {
+    if (loadState !== 'ready' || !sceneRef.current || !modelRef.current) return;
+    const previous = roomFurnishingsRef.current;
+    if (previous) {
+      sceneRef.current.remove(previous);
+      disposePresentationGroup(previous);
+    }
+    const spaceBounds = collectSpaceBounds(modelRef.current);
+    const floorBounds = collectFloorBounds(modelRef.current, sourceToMetersRef.current);
+    const { group, stats } = buildRoomFurnishings(roomSpacesRef.current, spaceBounds, buildingType, sourceToMetersRef.current, referenceRoles, floorBounds);
+    roomFurnishingsRef.current = group;
+    // Space bounds are measured after axis correction, so furnishings live in scene coordinates.
+    sceneRef.current.add(group);
+    sceneRef.current?.updateMatrixWorld(true);
+
+    const summary = stats.furnishedRooms
+      ? stats.estimatedRooms
+        ? `${stats.furnishedRooms} room${stats.furnishedRooms === 1 ? '' : 's'} staged from IFC floor geometry; this file has no IfcSpace room records`
+        : `${stats.furnishedRooms} room${stats.furnishedRooms === 1 ? '' : 's'} furnished from IFC room data`
+      : !stats.spacesDetected
+        ? 'No IfcSpace rooms or usable floor slabs were found; automatic furnishings skipped'
+        : !stats.roomsWithGeometry
+          ? `Found ${stats.spacesDetected} IFC rooms, but neither room volumes nor usable floor slabs; export IfcSpace geometry to place furnishings`
+          : stats.unclassified > 0 && stats.tooSmall === 0
+            ? `Found ${stats.roomsWithGeometry} room volumes, but their IFC names/properties did not identify uses such as toilet, kitchen, bedroom, or office`
+            : 'Room volumes found, but their dimensions did not safely fit the furniture sets';
+    onStatusRef.current?.(`IFC loaded · ${meshCount.toLocaleString()} meshes · ${summary}`);
+    onFurnishingsReady?.({ furnishedRooms: stats.furnishedRooms, estimatedRooms: stats.estimatedRooms || 0 });
+  }, [buildingType, loadState, meshCount, onFurnishingsReady, referenceRoles, upAxisPreference]);
+
+  useEffect(() => {
     if (loadState !== 'ready' || !modelRef.current) return;
     modelRef.current.traverse((object) => {
       if (!object.isMesh) return;
-      object.visible = !visibleStoreyId || String(object.userData.storeyId ?? '') === String(visibleStoreyId);
+      const belongsToVisibleStorey = !visibleStoreyId || String(object.userData.storeyId ?? '') === String(visibleStoreyId);
+      const cutawaySurface = interiorMode && ['roof', 'exteriorWall'].includes(object.userData.colorRole);
+      const isRoomVolume = String(object.userData.ifcType || '').toUpperCase() === 'IFCSPACE';
+      object.visible = !isRoomVolume && belongsToVisibleStorey && !cutawaySurface;
     });
-  }, [loadState, visibleStoreyId]);
+    roomFurnishingsRef.current?.children.forEach((room) => {
+      room.visible = !visibleStoreyId || String(room.userData.storeyId ?? '') === String(visibleStoreyId);
+    });
+  }, [interiorMode, loadState, visibleStoreyId]);
 
   useEffect(() => {
     if (loadState !== 'ready' || !modelRef.current) return;
@@ -608,16 +902,18 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       object.material.roughness = role === 'glazing' ? 0.16 : (presetRoleColor(materialStyle, role) ? materialPalettes[materialStyle]?.roughness : 0.82);
       object.material.needsUpdate = true;
     });
-    const lightingPreset = lightingPalettes[lighting] || lightingPalettes.daylight;
+    const matchedEnvironment = lighting === 'daylight' && environment !== 'clear' ? environment : lighting;
+    const lightingPreset = lightingPalettes[matchedEnvironment] || lightingPalettes.daylight;
     if (sceneRef.current) {
       sceneRef.current.children.find((child) => child.isDirectionalLight)?.color.set(lightingPreset.color);
       const directionalLights = sceneRef.current.children.filter((child) => child.isDirectionalLight);
       if (directionalLights[0]) directionalLights[0].intensity = lightingPreset.key;
+      if (directionalLights[0]) directionalLights[0].shadow.radius = environment === 'overcast' ? 8 : environment === 'golden' ? 2 : 3;
       if (directionalLights[1]) directionalLights[1].intensity = lightingPreset.fill;
       const hemisphere = sceneRef.current.children.find((child) => child.isHemisphereLight);
       if (hemisphere) hemisphere.intensity = lightingPreset.ambient;
     }
-  }, [lighting, materialStyle, loadState, referenceRoles]);
+  }, [environment, lighting, materialStyle, loadState, referenceRoles]);
 
   useEffect(() => {
     if (loadState !== 'ready') return;

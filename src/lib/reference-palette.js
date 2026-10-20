@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { DEFAULT_BUILDING_ROLES } from './building-rules';
 
-export const REFERENCE_PALETTE_VERSION = 5;
+export const REFERENCE_PALETTE_VERSION = 6;
 
 function hsv(red, green, blue) {
   const color = new THREE.Color().setRGB(red / 255, green / 255, blue / 255, THREE.SRGBColorSpace);
@@ -138,6 +138,35 @@ export function inspectReference(source) {
           ({ h, s, l, row, height }) => lowerColors({ h, l, row, height }) && (s < 0.34 || (h >= 0.025 && h <= 0.15)));
         const vehiclePaints = paletteFromPixels(scenePixels, sceneCanvas.width, sceneCanvas.height,
           ({ h, l, row, height }) => lowerColors({ h, l, row, height }), 6);
+        const skySamples = { blue: [], cloud: [], warm: [], dark: 0, total: 0 };
+        for (let index = 0; index < scenePixels.length; index += 4) {
+          const pixel = index / 4;
+          const row = Math.floor(pixel / sceneCanvas.width);
+          if (row >= sceneCanvas.height * 0.34) continue;
+          const red = scenePixels[index];
+          const green = scenePixels[index + 1];
+          const blue = scenePixels[index + 2];
+          const { h, s, l } = hsv(red, green, blue);
+          skySamples.total += 1;
+          if (l < 0.2) skySamples.dark += 1;
+          if (h >= 0.49 && h <= 0.72 && s > 0.12 && l > 0.2) skySamples.blue.push([red, green, blue]);
+          else if (l > 0.68 && s < 0.28) skySamples.cloud.push([red, green, blue]);
+          else if (h >= 0.025 && h <= 0.15 && s > 0.2 && l > 0.38) skySamples.warm.push([red, green, blue]);
+        }
+        const averageColor = (samples, fallback) => {
+          if (!samples.length) return fallback;
+          const total = samples.reduce((sum, sample) => [sum[0] + sample[0], sum[1] + sample[1], sum[2] + sample[2]], [0, 0, 0]);
+          return colorHex(total[0] / samples.length, total[1] / samples.length, total[2] / samples.length);
+        };
+        const skyCoverage = skySamples.blue.length + skySamples.cloud.length;
+        const cloudiness = skyCoverage ? skySamples.cloud.length / skyCoverage : 0.46;
+        const skyEnvironment = skySamples.dark / Math.max(skySamples.total, 1) > 0.46
+          ? 'blue'
+          : skySamples.warm.length / Math.max(skyCoverage, 1) > 0.28
+            ? 'golden'
+            : skySamples.blue.length / Math.max(skyCoverage, 1) < 0.12 && cloudiness > 0.5
+              ? 'overcast'
+              : 'clear';
         finish({
           palette,
           greenery: greenPixels / (pixels.length / 4) > 0.018,
@@ -146,6 +175,12 @@ export function inspectReference(source) {
             bark,
             hardscape,
             vehiclePaints,
+            sky: {
+              environment: skyEnvironment,
+              cloudiness,
+              skyColor: averageColor(skySamples.blue, '#5b8fbd'),
+              cloudColor: averageColor(skySamples.cloud, '#edf2f3'),
+            },
           },
         });
       } catch (error) {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Download } from 'lucide-react';
 import UserDropdown from '../components/UserDropdown';
 import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
@@ -9,6 +9,7 @@ import {
   DEFAULT_SURROUNDINGS_RULES,
 } from '../lib/building-rules';
 import { inspectReference, REFERENCE_PALETTE_VERSION, rolesFromPalette } from '../lib/reference-palette';
+import { inferBuildingTypeFromText } from '../lib/ifc-analysis';
 
 const IfcViewer = lazy(() => import('../components/IfcViewer'));
 
@@ -65,13 +66,13 @@ async function uploadAsset(projectId, kind, file) {
   }
 }
 
-function inferEnvironment(prompt) {
+function inferEnvironment(prompt, referenceEnvironment = 'clear') {
   const text = prompt.toLowerCase();
-  let environment = 'clear';
-  if (/\b(overcast|cloudy|cloud|diffuse)\b/.test(text)) environment = 'overcast';
-  else if (/\b(golden hour|sunset|dusk|warm evening)\b/.test(text)) environment = 'golden';
-  else if (/\b(blue hour|night|twilight)\b/.test(text)) environment = 'blue';
-  return environment;
+  if (/\b(overcast|cloudy|cloud|diffuse|grey sky)\b/.test(text)) return 'overcast';
+  if (/\b(golden hour|sunset|dusk|warm evening)\b/.test(text)) return 'golden';
+  if (/\b(blue hour|night|twilight)\b/.test(text)) return 'blue';
+  if (/\b(clear sky|sunny|bright daylight|midday)\b/.test(text)) return 'clear';
+  return referenceEnvironment || 'clear';
 }
 
 function summarizeDetectedModelParts(analysis) {
@@ -91,6 +92,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [activePanel, setActivePanel] = useState('inputs');
   const [prompt, setPrompt] = useState(project.prompt || project.direction || '');
   const [modelReady, setModelReady] = useState(false);
+  const autoCutawayModelIdRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [referenceAsset, setReferenceAsset] = useState(project.referenceAsset || null);
   const [localRenderUrls, setLocalRenderUrls] = useState({});
@@ -98,6 +100,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [rendering, setRendering] = useState(false);
   const [activeRenderId, setActiveRenderId] = useState(project.renders?.at(-1)?.id || null);
   const [captureRequest, setCaptureRequest] = useState(null);
+  const [interiorMode, setInteriorMode] = useState(false);
   const [camera, setCamera] = useState(project.sceneContext?.camera || 'isometric');
   const [modelUpAxis, setModelUpAxis] = useState(project.sceneContext?.upAxis || 'auto');
   const [lighting, setLighting] = useState(project.sceneContext?.lighting || 'daylight');
@@ -119,8 +122,12 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const activeRender = renders.find((render) => render.id === activeRenderId);
   const model = project.modelAsset?.kind === 'ifc' ? project.modelAsset : null;
   const referenceName = referenceAsset?.filename || '';
-  const inferredEnvironment = useMemo(() => inferEnvironment(prompt), [prompt]);
-  const selectedBuildingType = ifcAnalysis?.buildingType?.type || 'other';
+  const referenceEnvironment = referenceHints?.contextStyle?.sky?.environment || 'clear';
+  const inferredEnvironment = useMemo(() => inferEnvironment(prompt, referenceEnvironment), [prompt, referenceEnvironment]);
+  const buildingTypeFromName = inferBuildingTypeFromText(`${project.name || ''} ${model?.filename || ''}`);
+  const selectedBuildingType = ifcAnalysis?.buildingType?.type && ifcAnalysis.buildingType.type !== 'other'
+    ? ifcAnalysis.buildingType.type
+    : buildingTypeFromName;
   const detectedModelParts = useMemo(() => summarizeDetectedModelParts(ifcAnalysis), [ifcAnalysis]);
   const resolvedSurroundingsRules = useMemo(() => Object.fromEntries(BUILDING_TYPES.map(({ id }) => [
     id,
@@ -154,6 +161,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     setGroundStyle(project.sceneContext?.ground || 'grass');
     setModelUpAxis(project.sceneContext?.upAxis || 'auto');
     setModelReady(false);
+    setInteriorMode(false);
     setIfcAnalysis(project.ifcAnalysis || null);
     setVisibleStoreyId(project.sceneContext?.visibleStoreyId || '');
     setReferenceRoles({ ...DEFAULT_BUILDING_ROLES, ...(project.sceneContext?.buildingRoles || {}) });
@@ -317,9 +325,16 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     onUpdateProject({ ifcAnalysis: analysis });
   }, [onUpdateProject]);
 
+  const handleFurnishingsReady = useCallback(({ furnishedRooms }) => {
+    if (!furnishedRooms || !model?.id || autoCutawayModelIdRef.current === model.id) return;
+    autoCutawayModelIdRef.current = model.id;
+    setInteriorMode(true);
+  }, [model?.id]);
+
   useEffect(() => {
     setModelReady(false);
     setIfcAnalysis(null);
+    setInteriorMode(false);
   }, [model?.id]);
 
   const handleModelUpload = async (event) => {
@@ -464,8 +479,11 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   };
 
   const captureSnapshot = () => {
+    if (!model || !modelReady || rendering || uploading) return;
     setActiveRenderId(null);
-    generateRender();
+    setRendering(true);
+    setCaptureRequest({ id: createLocalId(), modelSha256: model.sha256 || '', localOnly: true });
+    setNotice('Capturing the current 3D view and saving the snapshot on this device.');
   };
 
   const handleViewerCapture = useCallback(async (jobId, imageBlob, meshCount, dimensions, error) => {
@@ -949,10 +967,12 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   layoutSeed={layoutSeed}
                   entrance={ifcAnalysis?.entrance}
                   visibleStoreyId={visibleStoreyId}
+                  interiorMode={interiorMode}
                   captureRequest={captureRequest}
                   onStatus={setNotice}
                   onReady={handleViewerReady}
                   onCapture={handleViewerCapture}
+                  onFurnishingsReady={handleFurnishingsReady}
                 />
               </Suspense>
               {activeRender && activeRender.url && <div className="absolute inset-0 z-10 pointer-events-none">
@@ -965,7 +985,10 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                 </div>
               </div>}
               {(modelReady || activeRender?.url) && <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
-                {modelReady && <button onClick={captureSnapshot} disabled={!readyToRender} title={readyToRender ? 'Capture a new environment snapshot' : 'Add a prompt and required inputs before capturing'} aria-label="Capture a new environment snapshot" className="flex items-center gap-2 border border-white/20 bg-black/65 text-white px-3 py-2 rounded-[4px] text-[10px] hover:bg-black/80 disabled:opacity-50">
+                {modelReady && <button onClick={() => setInteriorMode((current) => !current)} aria-pressed={interiorMode} title={interiorMode ? 'Show the full exterior model' : 'Hide the roof and exterior walls to inspect generated furnishings'} className={`border border-white/20 px-3 py-2 rounded-[4px] text-[10px] ${interiorMode ? 'bg-accent text-page' : 'bg-black/65 text-white hover:bg-black/80'}`}>
+                  {interiorMode ? 'Exterior view' : 'Interior cutaway'}
+                </button>}
+                {modelReady && <button onClick={captureSnapshot} disabled={rendering || uploading} title={rendering ? 'Saving snapshot…' : 'Capture and save the current 3D view'} aria-label="Capture and save the current 3D view" className="flex items-center gap-2 border border-white/20 bg-black/65 text-white px-3 py-2 rounded-[4px] text-[10px] hover:bg-black/80 disabled:opacity-50">
                   <Camera size={15} strokeWidth={1.8} />
                   <span>{rendering ? 'Capturing…' : 'Snapshot'}</span>
                 </button>}

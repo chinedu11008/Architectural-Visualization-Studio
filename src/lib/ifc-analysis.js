@@ -182,6 +182,10 @@ function detectBuildingType(signals) {
   };
 }
 
+export function inferBuildingTypeFromText(text) {
+  return detectBuildingType([{ label: 'Project and IFC filename', value: text, weight: 1 }]).type;
+}
+
 export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometryMeshCount = 0 } = {}) {
   const propertyMap = getPropertyValues(api, modelId);
   const materialMap = getMaterialNames(api, modelId);
@@ -216,12 +220,18 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
 
   const spaces = idsOf(api, modelId, 'IFCSPACE').map((id) => {
     const line = getLine(api, modelId, id);
+    const properties = propertyMap.get(id) || {};
     return {
+      id,
       name: textField(line, 'Name') || textField(line, 'LongName') || `Space ${id}`,
       longName: textField(line, 'LongName'),
-      usage: Object.entries(propertyMap.get(id) || {}).filter(([key]) => /occup|usage|space.?type|activity/i.test(key)).map(([key, value]) => `${key}: ${value}`),
+      objectType: textField(line, 'ObjectType'),
+      predefinedType: textField(line, 'PredefinedType'),
+      properties,
+      usage: Object.entries(properties).filter(([key]) => /occup|usage|space.?type|activity|room.?type|function|department/i.test(key)).map(([key, value]) => `${key}: ${value}`),
     };
   });
+  const spacesById = new Map(spaces.map((space) => [space.id, space]));
   const storeys = idsOf(api, modelId, 'IFCBUILDINGSTOREY').map((id) => {
     const line = getLine(api, modelId, id);
     return { id, name: textField(line, 'Name') || ('Storey ' + id), elevation: unwrap(line?.Elevation) ?? null };
@@ -237,6 +247,11 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
       if (element) {
         element.storeyId = storey.id;
         element.storeyName = storey.name;
+      }
+      const space = spacesById.get(elementId);
+      if (space) {
+        space.storeyId = storey.id;
+        space.storeyName = storey.name;
       }
     }
   }
@@ -284,6 +299,28 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
   const allProperties = [...propertyMap.values()].flatMap((properties) => Object.entries(properties).map(([key, value]) => `${key}: ${value}`));
   const occupancy = allProperties.filter((value) => /occup|usage|activity/i.test(value)).slice(0, 12);
   const site = summarizeSite(api, modelId);
+  const elementMetadata = Object.fromEntries([...elements].map(([id, element]) => [id, {
+    type: element.type,
+    properties: element.properties,
+    name: element.name,
+    objectType: element.objectType,
+    predefinedType: element.predefinedType,
+    materials: element.materials,
+    storeyId: element.storeyId ?? null,
+    storeyName: element.storeyName ?? null,
+  }]));
+  for (const space of spaces) {
+    elementMetadata[space.id] = {
+      ...elementMetadata[space.id],
+      type: 'IFCSPACE',
+      properties: space.properties,
+      name: space.name,
+      objectType: space.objectType,
+      predefinedType: space.predefinedType,
+      storeyId: space.storeyId ?? null,
+      storeyName: space.storeyName ?? null,
+    };
+  }
   return {
     schema: api.GetModelSchema(modelId),
     units,
@@ -304,16 +341,7 @@ export function analyzeIfcModel(api, modelId, { bounds, entrance = null, geometr
     warnings,
     siteBoundarySource: site?.hasPlotBoundary ? 'IFC site boundary' : 'Building footprint plus setback',
     explicitSiteBoundary: Boolean(site?.hasPlotBoundary),
-    elementMetadata: Object.fromEntries([...elements].map(([id, element]) => [id, {
-      type: element.type,
-      properties: element.properties,
-      name: element.name,
-      objectType: element.objectType,
-      predefinedType: element.predefinedType,
-      materials: element.materials,
-      storeyId: element.storeyId ?? null,
-      storeyName: element.storeyName ?? null,
-    }])),
+    elementMetadata,
   };
 }
 

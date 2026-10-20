@@ -7,42 +7,43 @@ function getStyleColors(colors, fallback) {
 
 function makeGrassTexture(repeatA, repeatB, referenceColors = []) {
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = 512;
+  canvas.height = 512;
   const context = canvas.getContext('2d');
   const colors = getStyleColors(referenceColors, ['#789b57', '#526f42', '#8ba565', '#6f824d', '#9a9a65']);
   const baseColor = new THREE.Color(colors[0]);
   context.fillStyle = `#${baseColor.getHexString()}`;
-  context.fillRect(0, 0, 128, 128);
+  context.fillRect(0, 0, canvas.width, canvas.height);
   let seed = 19;
   const random = () => {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
-  for (let blade = 0; blade < 900; blade += 1) {
-    const x = random() * 128;
-    const y = random() * 128;
+  for (let blade = 0; blade < 7200; blade += 1) {
+    const x = random() * canvas.width;
+    const y = random() * canvas.height;
     context.strokeStyle = colors[Math.floor(random() * colors.length)];
-    context.globalAlpha = 0.25 + random() * 0.45;
-    context.lineWidth = 0.5 + random() * 0.8;
+    context.globalAlpha = 0.18 + random() * 0.42;
+    context.lineWidth = 0.7 + random() * 1.5;
     context.beginPath();
     context.moveTo(x, y);
-    context.lineTo(x + (random() - 0.5) * 3, y - 2 - random() * 5);
+    context.lineTo(x + (random() - 0.5) * 5, y - 3 - random() * 10);
     context.stroke();
   }
   context.globalAlpha = 1;
   const texture = new THREE.CanvasTexture(canvas);
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
-  texture.repeat.set(Math.max(1, repeatA / 18), Math.max(1, repeatB / 18));
+  texture.repeat.set(Math.max(1, repeatA / 8), Math.max(1, repeatB / 8));
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
   return texture;
 }
 
 function makeFoliageTexture(referenceColors = []) {
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = 512;
+  canvas.height = 512;
   const context = canvas.getContext('2d');
   const colors = getStyleColors(referenceColors, ['#718d4f', '#344f32', '#4b6939', '#6c8747', '#829854', '#a0a361']);
   context.fillStyle = colors[0];
@@ -52,25 +53,26 @@ function makeFoliageTexture(referenceColors = []) {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
-  for (let leaf = 0; leaf < 1500; leaf += 1) {
+  for (let leaf = 0; leaf < 6200; leaf += 1) {
     const x = random() * canvas.width;
     const y = random() * canvas.height;
     context.fillStyle = colors[Math.floor(random() * colors.length)];
     context.globalAlpha = 0.45 + random() * 0.5;
     context.beginPath();
-    context.ellipse(x, y, 1 + random() * 2.2, 0.7 + random() * 1.6, random() * Math.PI, 0, Math.PI * 2);
+    context.ellipse(x, y, 1.4 + random() * 3.4, 0.9 + random() * 2.5, random() * Math.PI, 0, Math.PI * 2);
     context.fill();
   }
   context.globalAlpha = 1;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
   return texture;
 }
 
 function makeBarkTexture(referenceColors = []) {
   const canvas = document.createElement('canvas');
-  canvas.width = 96;
-  canvas.height = 128;
+  canvas.width = 256;
+  canvas.height = 512;
   const context = canvas.getContext('2d');
   const colors = getStyleColors(referenceColors, ['#594432', '#72583d', '#604936']);
   context.fillStyle = colors[0];
@@ -80,10 +82,10 @@ function makeBarkTexture(referenceColors = []) {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
-  for (let grain = 0; grain < 80; grain += 1) {
+  for (let grain = 0; grain < 230; grain += 1) {
     context.globalAlpha = 0.24 + random() * 0.42;
     context.strokeStyle = colors[Math.floor(random() * colors.length)];
-    context.lineWidth = 0.5 + random() * 2;
+    context.lineWidth = 0.6 + random() * 3;
     const x = random() * canvas.width;
     context.beginPath();
     context.moveTo(x, 0);
@@ -93,13 +95,16 @@ function makeBarkTexture(referenceColors = []) {
   context.globalAlpha = 1;
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.anisotropy = 4;
   return texture;
 }
 
 function makeHardscapeTexture(referenceColors = [], repeatX = 1, repeatY = 1) {
   const canvas = document.createElement('canvas');
-  canvas.width = 128;
-  canvas.height = 128;
+  canvas.width = 512;
+  canvas.height = 512;
   const context = canvas.getContext('2d');
   const colors = getStyleColors(referenceColors, ['#888984', '#777b79', '#b8b4aa']);
   context.fillStyle = colors[0];
@@ -109,17 +114,32 @@ function makeHardscapeTexture(referenceColors = [], repeatX = 1, repeatY = 1) {
     seed = (seed * 16807) % 2147483647;
     return (seed - 1) / 2147483646;
   };
-  const tile = 32;
-  for (let row = 0; row < 4; row += 1) {
-    for (let column = 0; column < 4; column += 1) {
-      const inset = 1.5;
-      context.globalAlpha = 0.25 + random() * 0.48;
-      context.fillStyle = colors[Math.floor(random() * colors.length)];
-      context.fillRect(column * tile + inset, row * tile + inset, tile - inset * 2, tile - inset * 2);
-      for (let fleck = 0; fleck < 22; fleck += 1) {
-        context.globalAlpha = 0.12 + random() * 0.24;
+  const columns = 8;
+  const rows = 16;
+  const tileWidth = canvas.width / columns;
+  const tileHeight = canvas.height / rows;
+  context.fillStyle = '#55534f';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  for (let row = 0; row < rows; row += 1) {
+    const offset = row % 2 ? tileWidth / 2 : 0;
+    for (let column = -1; column <= columns; column += 1) {
+      const x = column * tileWidth + offset;
+      const y = row * tileHeight;
+      const inset = 2.5;
+      const shade = colors[Math.floor(random() * colors.length)];
+      context.globalAlpha = 0.62 + random() * 0.32;
+      context.fillStyle = shade;
+      context.fillRect(x + inset, y + inset, tileWidth - inset * 2, tileHeight - inset * 2);
+      context.globalAlpha = 0.1 + random() * 0.16;
+      context.fillStyle = '#ffffff';
+      context.fillRect(x + inset, y + inset, tileWidth - inset * 2, 1.5 + random() * 2);
+      context.globalAlpha = 0.12 + random() * 0.2;
+      context.fillStyle = '#292a29';
+      context.fillRect(x + inset, y + tileHeight - inset - 2, tileWidth - inset * 2, 2 + random() * 2);
+      for (let fleck = 0; fleck < 36; fleck += 1) {
+        context.globalAlpha = 0.08 + random() * 0.22;
         context.fillStyle = colors[Math.floor(random() * colors.length)];
-        context.fillRect(column * tile + random() * tile, row * tile + random() * tile, 1 + random() * 2, 1 + random() * 2);
+        context.fillRect(x + inset + random() * (tileWidth - inset * 2), y + inset + random() * (tileHeight - inset * 2), 1 + random() * 4, 1 + random() * 3);
       }
     }
   }
@@ -129,6 +149,54 @@ function makeHardscapeTexture(referenceColors = [], repeatX = 1, repeatY = 1) {
   texture.wrapS = THREE.RepeatWrapping;
   texture.wrapT = THREE.RepeatWrapping;
   texture.repeat.set(repeatX, repeatY);
+  texture.anisotropy = 4;
+  return texture;
+}
+
+function makeMasonryTexture(referenceColors = [], repeatX = 1, repeatY = 1) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 256;
+  const context = canvas.getContext('2d');
+  const colors = getStyleColors(referenceColors, ['#6f6c63', '#817d72', '#a19b8e', '#56554f']);
+  let seed = 481;
+  const random = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  context.fillStyle = '#494944';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const courses = 6;
+  const rows = canvas.height / courses;
+  const stonesPerCourse = 7;
+  const stoneWidth = canvas.width / stonesPerCourse;
+  for (let row = 0; row < courses; row += 1) {
+    const offset = row % 2 ? stoneWidth / 2 : 0;
+    for (let column = -1; column <= stonesPerCourse; column += 1) {
+      const x = column * stoneWidth + offset;
+      const y = row * rows;
+      const insetX = 3 + random() * 3;
+      const insetY = 3 + random() * 2;
+      context.globalAlpha = 0.72 + random() * 0.27;
+      context.fillStyle = colors[Math.floor(random() * colors.length)];
+      context.fillRect(x + insetX, y + insetY, stoneWidth - insetX * 2, rows - insetY * 2);
+      context.globalAlpha = 0.12 + random() * 0.18;
+      context.fillStyle = '#f4eee2';
+      context.fillRect(x + insetX, y + insetY, stoneWidth - insetX * 2, 2 + random() * 2);
+      for (let fleck = 0; fleck < 24; fleck += 1) {
+        context.globalAlpha = 0.08 + random() * 0.19;
+        context.fillStyle = colors[Math.floor(random() * colors.length)];
+        context.fillRect(x + insetX + random() * (stoneWidth - insetX * 2), y + insetY + random() * (rows - insetY * 2), 1 + random() * 5, 1 + random() * 4);
+      }
+    }
+  }
+  context.globalAlpha = 1;
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(repeatX, repeatY);
+  texture.anisotropy = 4;
   return texture;
 }
 
@@ -165,9 +233,14 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
   const minY = bounds.min.y;
   const maxY = bounds.max.y;
   const floor = bounds.min.z - Math.max(radius * 0.002, 0.02);
-  const setback = Math.max(6, Math.min(12, Math.max(size.x, size.y) * 0.14));
+  const setback = Math.max(10, Math.min(36, Math.max(size.x, size.y) * 0.8));
   const plot = siteBounds
-    ? { minX: siteBounds.min.x, maxX: siteBounds.max.x, minY: siteBounds.min.y, maxY: siteBounds.max.y }
+    ? {
+      minX: Math.min(siteBounds.min.x, minX - setback),
+      maxX: Math.max(siteBounds.max.x, maxX + setback),
+      minY: Math.min(siteBounds.min.y, minY - setback),
+      maxY: Math.max(siteBounds.max.y, maxY + setback),
+    }
     : { minX: minX - setback, maxX: maxX + setback, minY: minY - setback, maxY: maxY + setback };
   const frontSide = entrance?.side || 'south';
   const isHorizontalFront = frontSide === 'south' || frontSide === 'north';
@@ -241,7 +314,7 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
   const groundHeight = plot.maxY - plot.minY;
   const grassTexture = groundStyle === 'grass' ? makeGrassTexture(groundWidth, groundHeight, vegetationColors) : null;
   const groundTexture = groundStyle !== 'grass'
-    ? makeHardscapeTexture(hardscapeColors, Math.max(1, groundWidth / 8), Math.max(1, groundHeight / 8))
+    ? makeHardscapeTexture(hardscapeColors, Math.max(1, groundWidth / 3.2), Math.max(1, groundHeight / 3.2))
     : null;
   const groundMaterial = new THREE.MeshStandardMaterial({
     color: groundStyle === 'grass' || groundTexture ? '#ffffff' : (groundColors[groundStyle] || groundColors.grass),
@@ -272,7 +345,7 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
     const stripMaterial = material.clone();
     if (material.map) {
       stripMaterial.map = material.map.clone();
-      stripMaterial.map.repeat.set(Math.max(1, width / 8), Math.max(1, length / 8));
+      stripMaterial.map.repeat.set(Math.max(1, width / 3.2), Math.max(1, length / 3.2));
       stripMaterial.map.needsUpdate = true;
     }
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, length), stripMaterial);
@@ -285,6 +358,22 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
 
   const drivewayEnd = frontPoint.clone().addScaledVector(outward, 0.75);
   const driveWidth = 4.2;
+  if (contextObjects.paths !== false) {
+    const courtyardDepth = Math.max(0, frontPoint.distanceTo(gatePoint) - 0.5);
+    const courtyardWidth = Math.max(0, plotHalfAlongTangent * 2 - 2.4);
+    if (courtyardDepth > 2 && courtyardWidth > 4) {
+      const courtyardMaterial = paving.clone();
+      courtyardMaterial.map = paving.map.clone();
+      courtyardMaterial.map.repeat.set(courtyardWidth / 3.2, courtyardDepth / 3.2);
+      courtyardMaterial.map.needsUpdate = true;
+      const courtyard = new THREE.Mesh(new THREE.PlaneGeometry(courtyardWidth, courtyardDepth), courtyardMaterial);
+      courtyard.name = 'Paved front courtyard · presentation only';
+      courtyard.position.copy(frontPoint).addScaledVector(outward, courtyardDepth / 2);
+      courtyard.position.z = floor + 0.018;
+      courtyard.rotation.z = Math.atan2(outward.y, outward.x) - Math.PI / 2;
+      group.add(courtyard);
+    }
+  }
   if (contextObjects.cars || contextObjects.vehicles) {
     addStrip(gatePoint, drivewayEnd, driveWidth, paving, 'Driveway');
   }
@@ -311,11 +400,13 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
     if (length < 0.1) return;
     if (fenceStyle.includes('masonry')) {
       const wallHeight = fenceStyle.includes('low') ? 1.05 : fenceHeight;
+      const stoneTexture = makeMasonryTexture(hardscapeColors, Math.max(1, length / 4.3), Math.max(1, wallHeight / 1.5));
+      const stoneMaterial = new THREE.MeshStandardMaterial({ color: '#ffffff', map: stoneTexture, roughness: 0.92 });
       const wall = new THREE.Mesh(new THREE.BoxGeometry(
         Math.abs(direction.x) > Math.abs(direction.y) ? length : 0.24,
         Math.abs(direction.y) >= Math.abs(direction.x) ? length : 0.24,
         wallHeight,
-      ), fenceMaterial);
+      ), stoneMaterial);
       wall.position.set((from.x + to.x) / 2, (from.y + to.y) / 2, floor + wallHeight / 2);
       wall.name = `${name} wall · presentation only`;
       group.add(wall);
@@ -452,6 +543,7 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
       t: (slot + 0.35 + treeRandom() * 0.3) / slotsPerSide,
     })));
     const plantedCanopies = [];
+    const leafClusterGeometry = new THREE.SphereGeometry(0.5, 12, 8);
     const pointSegmentDistance = (point, start, end) => {
       const dx = end.x - start.x;
       const dy = end.y - start.y;
@@ -510,15 +602,38 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
       const trunk = new THREE.Mesh(new THREE.CylinderGeometry(height * 0.025, height * 0.042, height * 0.55, 8), trunkMaterial);
       trunk.position.y = height * 0.275;
       tree.add(trunk);
-      const crown = new THREE.Mesh(new THREE.SphereGeometry(height * 0.22, 12, 9), foliageMaterial);
-      crown.position.y = height * 0.67;
-      crown.scale.set(1.08, 0.9, 0.98);
-      tree.add(crown);
-      for (let puff = 0; puff < 3; puff += 1) {
-        const lobe = new THREE.Mesh(new THREE.SphereGeometry(height * 0.14, 10, 8), foliageMaterial);
-        lobe.position.set((random() - 0.5) * height * 0.28, height * (0.64 + random() * 0.12), (random() - 0.5) * height * 0.26);
-        tree.add(lobe);
+      for (let branchIndex = 0; branchIndex < 5; branchIndex += 1) {
+        const angle = (branchIndex / 5) * Math.PI * 2 + random() * 0.35;
+        const branchLength = height * (0.2 + random() * 0.06);
+        const direction = new THREE.Vector3(Math.cos(angle) * 0.7, 0.72, Math.sin(angle) * 0.7).normalize();
+        const branch = new THREE.Mesh(new THREE.CylinderGeometry(height * 0.012, height * 0.022, branchLength, 6), trunkMaterial);
+        branch.position.set(direction.x * branchLength * 0.34, height * (0.46 + random() * 0.1), direction.z * branchLength * 0.34);
+        branch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction);
+        tree.add(branch);
       }
+      const canopyCount = 48;
+      const canopy = new THREE.InstancedMesh(leafClusterGeometry, foliageMaterial, canopyCount);
+      const dummy = new THREE.Object3D();
+      const sphereDirection = new THREE.Vector3();
+      for (let leafIndex = 0; leafIndex < canopyCount; leafIndex += 1) {
+        sphereDirection.set(random() * 2 - 1, random() * 2 - 1, random() * 2 - 1).normalize();
+        const spread = leafIndex === 0 ? 0 : Math.pow(random(), 0.42);
+        const clusterRadius = height * (0.08 + random() * 0.045);
+        dummy.position.set(
+          sphereDirection.x * crownRadius * spread,
+          height * 0.7 + sphereDirection.y * height * 0.18 * spread,
+          sphereDirection.z * crownRadius * 0.78 * spread,
+        );
+        dummy.scale.set(clusterRadius * (0.85 + random() * 0.5), clusterRadius * (0.78 + random() * 0.5), clusterRadius * (0.85 + random() * 0.5));
+        dummy.rotation.set(random() * Math.PI, random() * Math.PI, random() * Math.PI);
+        dummy.updateMatrix();
+        canopy.setMatrixAt(leafIndex, dummy.matrix);
+        canopy.setColorAt(leafIndex, new THREE.Color(vegetationColors[Math.floor(random() * vegetationColors.length)]));
+      }
+      canopy.instanceMatrix.needsUpdate = true;
+      canopy.computeBoundingBox();
+      canopy.computeBoundingSphere();
+      tree.add(canopy);
       tree.position.set(x, y, floor);
       group.add(tree);
     }
@@ -531,18 +646,36 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
     const edgeLength = horizontalEdge ? plot.maxX - plot.minX : plot.maxY - plot.minY;
     const count = Math.min(requestedShrubs, Math.max(0, Math.floor((edgeLength - 2.4) / 1.25)));
     const shrubMaterial = new THREE.MeshStandardMaterial({ color: '#ffffff', map: makeFoliageTexture(vegetationColors), roughness: 1 });
+    const shrubInstances = new THREE.InstancedMesh(new THREE.SphereGeometry(0.5, 10, 8), shrubMaterial, count * 7);
+    const shrubTransform = new THREE.Object3D();
+    let shrubInstance = 0;
     for (let index = 0; index < count; index += 1) {
       const t = (index + 0.5) / Math.max(count, 1);
       const inset = 0.9;
       const x = horizontalEdge ? plot.minX + inset + t * (plot.maxX - plot.minX - inset * 2) : (rearSide === 'west' ? plot.minX + inset : plot.maxX - inset);
       const y = horizontalEdge ? (rearSide === 'north' ? plot.maxY - inset : plot.minY + inset) : plot.minY + inset + t * (plot.maxY - plot.minY - inset * 2);
       const radiusSize = 0.32 + random() * 0.16;
-      const shrub = new THREE.Mesh(new THREE.IcosahedronGeometry(radiusSize, 1), shrubMaterial);
-      shrub.name = `${rule.vegetation || 'Ornamental'} hedge ${index + 1} · presentation only`;
-      shrub.position.set(x, y, floor + radiusSize * 0.5);
-      shrub.scale.set(1.3, 0.9, 0.8);
-      group.add(shrub);
+      for (let cluster = 0; cluster < 7; cluster += 1) {
+        const leafRadius = radiusSize * (0.52 + random() * 0.48);
+        shrubTransform.position.set(
+          x + (random() - 0.5) * radiusSize * 1.55,
+          y + (random() - 0.5) * radiusSize * 1.15,
+          floor + radiusSize * (0.38 + random() * 0.55),
+        );
+        shrubTransform.scale.set(leafRadius * 1.1, leafRadius * 0.85, leafRadius * 0.72);
+        shrubTransform.rotation.set(random(), random(), random());
+        shrubTransform.updateMatrix();
+        shrubInstances.setMatrixAt(shrubInstance, shrubTransform.matrix);
+        shrubInstances.setColorAt(shrubInstance, new THREE.Color(vegetationColors[Math.floor(random() * vegetationColors.length)]));
+        shrubInstance += 1;
+      }
     }
+    shrubInstances.name = `${rule.vegetation || 'Ornamental'} hedge clusters · presentation only`;
+    shrubInstances.count = shrubInstance;
+    shrubInstances.instanceMatrix.needsUpdate = true;
+    shrubInstances.computeBoundingBox();
+    shrubInstances.computeBoundingSphere();
+    group.add(shrubInstances);
   }
 
   if (vehiclesEnabled && vehiclePlans.length) {
@@ -557,26 +690,76 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
       const up = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, 0, 1));
       const tangentAngle = Math.atan2(tangent.x, -tangent.y);
       vehicle.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), tangentAngle).multiply(up);
-      const paint = new THREE.MeshPhysicalMaterial({ color: vehiclePaints[Math.floor(random() * vehiclePaints.length)], roughness: 0.34, metalness: 0.28, clearcoat: 0.55 });
-      const glass = new THREE.MeshPhysicalMaterial({ color: referenceRoles.glazing || '#26373b', roughness: 0.18, metalness: 0.12, clearcoat: 0.7 });
+      const paint = new THREE.MeshPhysicalMaterial({ color: vehiclePaints[Math.floor(random() * vehiclePaints.length)], roughness: 0.27, metalness: 0.3, clearcoat: 0.8, clearcoatRoughness: 0.2 });
+      const glass = new THREE.MeshPhysicalMaterial({ color: referenceRoles.glazing || '#60737a', roughness: 0.16, metalness: 0.08, clearcoat: 0.85, transparent: true, opacity: 0.84, depthWrite: false });
       const rubber = new THREE.MeshStandardMaterial({ color: '#202222', roughness: 0.94 });
       const alloy = new THREE.MeshStandardMaterial({ color: '#b8b9b3', roughness: 0.3, metalness: 0.65 });
+      const darkTrim = new THREE.MeshStandardMaterial({ color: '#272b2b', roughness: 0.72, metalness: 0.12 });
+      const headlamp = new THREE.MeshStandardMaterial({ color: '#fff0c9', emissive: '#ffe4a1', emissiveIntensity: 0.12, roughness: 0.2 });
+      const tailLamp = new THREE.MeshStandardMaterial({ color: '#8c3024', emissive: '#8c180e', emissiveIntensity: 0.08, roughness: 0.3 });
       const body = new THREE.Mesh(new RoundedBoxGeometry(width, height * 0.36, length, 4, 0.12), paint);
       body.position.y = height * 0.31;
       vehicle.add(body);
-      const cabin = new THREE.Mesh(new RoundedBoxGeometry(width * 0.74, height * 0.42, length * 0.48, 4, 0.12), glass);
-      cabin.position.set(0, height * 0.67, -length * 0.04);
-      vehicle.add(cabin);
+      const hood = new THREE.Mesh(new RoundedBoxGeometry(width * 0.86, height * 0.13, length * 0.29, 3, 0.055), paint);
+      hood.position.set(0, height * 0.49, length * 0.31);
+      vehicle.add(hood);
+      const trunk = new THREE.Mesh(new RoundedBoxGeometry(width * 0.82, height * 0.1, length * 0.2, 3, 0.045), paint);
+      trunk.position.set(0, height * 0.47, -length * 0.39);
+      vehicle.add(trunk);
+      const roof = new THREE.Mesh(new RoundedBoxGeometry(width * 0.7, height * 0.075, length * 0.41, 4, 0.075), paint);
+      roof.position.set(0, height * 0.86, -length * 0.045);
+      vehicle.add(roof);
+      const windshield = new THREE.Mesh(new THREE.BoxGeometry(width * 0.62, height * 0.235, 0.025), glass);
+      windshield.position.set(0, height * 0.69, length * 0.19);
+      windshield.rotation.x = -0.32;
+      vehicle.add(windshield);
+      const rearWindow = new THREE.Mesh(new THREE.BoxGeometry(width * 0.58, height * 0.2, 0.022), glass);
+      rearWindow.position.set(0, height * 0.68, -length * 0.27);
+      rearWindow.rotation.x = 0.32;
+      vehicle.add(rearWindow);
+      for (const side of [-1, 1]) {
+        for (const section of [-1, 1]) {
+          const pillar = new THREE.Mesh(new THREE.BoxGeometry(width * 0.055, height * 0.28, length * 0.045), paint);
+          pillar.position.set(side * width * 0.33, height * 0.69, section * length * 0.205);
+          vehicle.add(pillar);
+        }
+        const sideWindow = new THREE.Mesh(new THREE.BoxGeometry(0.018, height * 0.195, length * 0.31), glass);
+        sideWindow.position.set(side * width * 0.365, height * 0.69, -length * 0.025);
+        vehicle.add(sideWindow);
+        const mirror = new THREE.Mesh(new RoundedBoxGeometry(width * 0.1, height * 0.075, length * 0.08, 2, 0.025), paint);
+        mirror.position.set(side * width * 0.53, height * 0.65, length * 0.14);
+        vehicle.add(mirror);
+      }
+      const addBox = (geometry, material, position, rotation = null) => {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.position.set(position[0], position[1], position[2]);
+        if (rotation) mesh.rotation.set(rotation[0], rotation[1], rotation[2]);
+        vehicle.add(mesh);
+        return mesh;
+      };
+      addBox(new THREE.BoxGeometry(width * 0.44, height * 0.105, 0.025), darkTrim, [0, height * 0.31, length * 0.502]);
+      for (let slat = 0; slat < 3; slat += 1) {
+        addBox(new THREE.BoxGeometry(width * 0.36, 0.012, 0.03), alloy, [0, height * (0.275 + slat * 0.035), length * 0.511]);
+      }
+      for (const side of [-1, 1]) {
+        addBox(new THREE.BoxGeometry(width * 0.15, height * 0.075, 0.035), headlamp, [side * width * 0.32, height * 0.43, length * 0.49]);
+        addBox(new THREE.BoxGeometry(width * 0.13, height * 0.085, 0.028), tailLamp, [side * width * 0.34, height * 0.4, -length * 0.49]);
+      }
+      addBox(new RoundedBoxGeometry(width * 0.94, height * 0.065, 0.14, 3, 0.035), alloy, [0, height * 0.22, length * 0.48]);
+      addBox(new RoundedBoxGeometry(width * 0.92, height * 0.055, 0.12, 3, 0.03), darkTrim, [0, height * 0.22, -length * 0.48]);
       const wheelRadius = Math.min(0.36, height * 0.23);
       for (const side of [-1, 1]) for (const axle of [-1, 1]) {
         const wheel = new THREE.Group();
         wheel.position.set(side * width * 0.49, wheelRadius, axle * length * 0.31);
-        const tire = new THREE.Mesh(new THREE.CylinderGeometry(wheelRadius, wheelRadius, width * 0.095, 16), rubber);
+        const tire = new THREE.Mesh(new THREE.CylinderGeometry(wheelRadius, wheelRadius, width * 0.11, 24), rubber);
         tire.rotation.z = Math.PI / 2;
         wheel.add(tire);
-        const rim = new THREE.Mesh(new THREE.CylinderGeometry(wheelRadius * 0.56, wheelRadius * 0.56, width * 0.1, 12), alloy);
+        const rim = new THREE.Mesh(new THREE.CylinderGeometry(wheelRadius * 0.58, wheelRadius * 0.58, width * 0.112, 16), alloy);
         rim.rotation.z = Math.PI / 2;
         wheel.add(rim);
+        const hub = new THREE.Mesh(new THREE.CylinderGeometry(wheelRadius * 0.2, wheelRadius * 0.2, width * 0.116, 12), darkTrim);
+        hub.rotation.z = Math.PI / 2;
+        wheel.add(hub);
         vehicle.add(wheel);
       }
       if (type === 'ambulance') {
