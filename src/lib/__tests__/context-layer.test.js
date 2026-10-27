@@ -11,13 +11,14 @@ function canvasContext() {
   };
 }
 
-function createContextLayer(seed) {
+function createContextLayer(seed, siteBounds = null) {
   const bounds = new THREE.Box3(new THREE.Vector3(-5, -5, 0), new THREE.Vector3(5, 5, 8));
   return makeRuleBasedContextLayer(bounds, 8, {
     contextObjects: { trees: true, shrubs: false, cars: false, people: false, boundary: false, paths: false, grass: false },
     buildingType: 'house',
     rule: { trees: 4, vegetation: 'formal' },
     seed,
+    siteBounds,
   });
 }
 
@@ -56,5 +57,20 @@ describe('seeded context layer', () => {
     expect(treePositions(first).length).toBeGreaterThan(0);
     expect(treePositions(first)).toEqual(treePositions(repeat));
     expect(treePositions(first)).not.toEqual(treePositions(changed));
+  });
+
+  it('uses the accepted IfcSite boundary as the exact plot bounds', () => {
+    const siteBounds = new THREE.Box3(new THREE.Vector3(-12, -9, 0), new THREE.Vector3(18, 16, 0));
+    const group = createContextLayer(19, siteBounds);
+    expect(group.userData.layout).toMatchObject({
+      setback: 0,
+      plotBounds: { minX: -12, maxX: 18, minY: -9, maxY: 16 },
+    });
+  });
+
+  it('applies the setback only when no IfcSite boundary is available', () => {
+    const group = createContextLayer(19);
+    expect(group.userData.layout.setback).toBeGreaterThanOrEqual(10);
+    expect(group.userData.layout.plotBounds).toMatchObject({ minX: -15, maxX: 15, minY: -15, maxY: 15 });
   });
 });

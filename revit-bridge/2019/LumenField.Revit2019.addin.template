@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<RevitAddIns>
+  <AddIn Type="Command">
+    <Name>Lumen / Field: Export IFC</Name>
+    <Assembly>__LUMEN_ADDIN_ASSEMBLY__</Assembly>
+    <AddInId>DE05584E-C4B9-4559-AE02-CE22E03C57A9</AddInId>
+    <FullClassName>LumenField.Revit2019.ExportIfcCommand</FullClassName>
+    <VendorId>LUMN</VendorId>
+    <VendorDescription>Lumen / Field local IFC export</VendorDescription>
+  </AddIn>
+</RevitAddIns>

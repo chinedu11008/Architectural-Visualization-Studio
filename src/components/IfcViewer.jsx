@@ -6,6 +6,7 @@ import wasmUrl from 'web-ifc/web-ifc.wasm?url';
 import { getLocalAssetBlob, MAX_BROWSER_IFC_BYTES } from '../lib/local-assets';
 import { analyzeIfcModel, completeIfcAnalysis } from '../lib/ifc-analysis';
 import { makeRuleBasedContextLayer } from '../lib/context-layer';
+import { locateMainEntrance } from '../lib/ifc-entrance';
 import { elementColorRole } from '../lib/element-roles';
 import { buildRoomFurnishings } from '../lib/room-furnishings';
 
@@ -23,16 +24,6 @@ const lightingPalettes = {
   golden: { ambient: 0.78, key: 2.7, color: '#ffd09a', fill: 0.35 },
   blue: { ambient: 0.48, key: 1.65, color: '#9ab8ef', fill: 0.25 },
 };
-
-function isExternal(properties = {}) {
-  const raw = properties.IsExternal ?? properties.isExternal;
-  if (raw === true || raw === 1) return true;
-  if (raw === false || raw === 0) return false;
-  const normalized = String(raw ?? '').toLowerCase();
-  if (normalized === 'true' || normalized === 't') return true;
-  if (normalized === 'false' || normalized === 'f') return false;
-  return null;
-}
 
 function inferSurfaceRole(object, buildingBounds) {
   const bounds = new THREE.Box3().setFromObject(object);
@@ -260,42 +251,6 @@ function makeSkyTexture(environment, referenceSky = {}) {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
   return texture;
-}
-
-function locateMainEntrance(modelGroup, bounds, elementMetadata) {
-  const doors = [];
-  modelGroup.traverse((object) => {
-    if (!object.isMesh) return;
-    const metadata = elementMetadata[object.userData.ifcExpressID];
-    if (!String(metadata?.type || '').toUpperCase().includes('DOOR')) return;
-    object.updateWorldMatrix(true, false);
-    const box = new THREE.Box3().setFromObject(object);
-    if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
-    const distances = [
-      ['west', Math.abs(center.x - bounds.min.x)],
-      ['east', Math.abs(bounds.max.x - center.x)],
-      ['south', Math.abs(center.y - bounds.min.y)],
-      ['north', Math.abs(bounds.max.y - center.y)],
-    ].sort((a, b) => a[1] - b[1]);
-    const isExternalDoor = isExternal(metadata.properties);
-    const groundDelta = Math.max(0, box.min.z - bounds.min.z);
-    const width = Math.max(box.getSize(new THREE.Vector3()).x, box.getSize(new THREE.Vector3()).y);
-    doors.push({
-      id: object.userData.ifcExpressID,
-      side: distances[0][0],
-      position: { x: center.x, y: center.y, z: box.min.z },
-      width,
-      isExternal: isExternalDoor,
-      groundDelta,
-      name: metadata.name || null,
-    });
-  });
-  const groundLimit = Math.max(0.8, bounds.getSize(new THREE.Vector3()).z * 0.1);
-  const groundDoors = doors.filter((door) => door.groundDelta <= groundLimit);
-  return (groundDoors.length ? groundDoors : doors)
-    .sort((first, second) => Number(second.isExternal) - Number(first.isExternal)
-      || first.groundDelta - second.groundDelta || second.width - first.width)[0] || null;
 }
 
 function getBuildingBounds(root) {

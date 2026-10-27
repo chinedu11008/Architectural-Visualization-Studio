@@ -1,5 +1,6 @@
 import hashlib
 import json
+import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,6 +18,7 @@ DATA;
 ENDSEC;
 END-ISO-10303-21;
 """
+RVT_BYTES = b"Autodesk Revit project fixture"
 PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x0dIHDR" + b"\x00\x00\x00\x01\x00\x00\x00\x01" + b"\x08\x06\x00\x00\x00" + b"\x1f\x15\xc4\x89"
 
 
@@ -50,6 +52,50 @@ def test_health_declares_immutable_geometry_policy(api):
     assert response.json()["geometry_policy"] == "immutable"
 
 
+def test_init_db_migrates_existing_asset_constraint_without_losing_render_references(tmp_path, monkeypatch):
+    data_dir = tmp_path / "legacy-data"
+    data_dir.mkdir()
+    db_path = data_dir / "legacy.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE assets (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK (kind IN ('ifc', 'reference', 'render')),
+                filename TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                storage_name TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE render_jobs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                model_asset_id TEXT NOT NULL REFERENCES assets(id)
+            );
+            INSERT INTO assets VALUES ('model-1', 'project-1', 'ifc', 'model.ifc', 'application/x-step', 1, 'hash', 'model.ifc', 'today');
+            INSERT INTO render_jobs VALUES ('job-1', 'project-1', 'model-1');
+            """
+        )
+    monkeypatch.setattr(main, "DATA_DIR", data_dir)
+    monkeypatch.setattr(main, "ASSET_DIR", data_dir / "assets")
+    monkeypatch.setattr(main, "DB_PATH", db_path)
+
+    main.init_db()
+
+    with main.connect_db() as connection:
+        asset = connection.execute("SELECT * FROM assets WHERE id = 'model-1'").fetchone()
+        jobs = connection.execute("SELECT model_asset_id FROM render_jobs WHERE id = 'job-1'").fetchone()
+        schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'").fetchone()["sql"]
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+    assert asset["filename"] == "model.ifc"
+    assert jobs["model_asset_id"] == "model-1"
+    assert "'rvt'" in schema
+    assert violations == []
+
+
 
 def test_ifc_api_upload_size_limit_is_64_mib(api, monkeypatch):
     assert main.MAX_IFC_BYTES == 64 * 1024 * 1024
@@ -59,6 +105,51 @@ def test_ifc_api_upload_size_limit_is_64_mib(api, monkeypatch):
         files={"file": ("building.ifc", IFC_BYTES, "application/x-step")},
     )
     assert response.status_code == 413
+
+
+def test_rvt_upload_is_stored_as_original_source(api):
+    response = api.post(
+        "/api/projects/test-project/assets/model",
+        files={"file": ("house.rvt", RVT_BYTES, "application/vnd.autodesk.revit")},
+    )
+    assert response.status_code == 201
+    asset = response.json()
+    assert asset["kind"] == "rvt"
+    assert asset["filename"] == "house.rvt"
+    assert api.get(asset["url"]).content == RVT_BYTES
+
+
+def test_rvt_upload_size_limit(api, monkeypatch):
+    monkeypatch.setattr(main, "MAX_RVT_BYTES", len(RVT_BYTES) - 1)
+    response = api.post(
+        "/api/projects/test-project/assets/model",
+        files={"file": ("house.rvt", RVT_BYTES, "application/octet-stream")},
+    )
+    assert response.status_code == 413
+
+
+def test_rvt_source_and_locally_exported_ifc_are_stored_in_the_same_project(api):
+    uploaded = api.post(
+        "/api/projects/test-project/assets/model",
+        files={"file": ("house.rvt", RVT_BYTES, "application/octet-stream")},
+    ).json()
+    exported = api.post(
+        "/api/projects/test-project/assets/model",
+        files={"file": ("house.ifc", IFC_BYTES, "application/x-step")},
+    )
+    assert exported.status_code == 201
+    converted = exported.json()
+    assert converted["kind"] == "ifc"
+    assert converted["filename"] == "house.ifc"
+    assert api.get(converted["url"]).content == IFC_BYTES
+    assert api.get(uploaded["url"]).content == RVT_BYTES
+    assert {asset["kind"] for asset in api.get("/api/projects/test-project/assets").json()} == {"rvt", "ifc"}
+
+
+def test_rvt_does_not_expose_a_cloud_conversion_route(api):
+    response = api.post("/api/assets/not-an-asset/convert-rvt")
+    assert response.status_code == 404
+
 
 def test_uploads_are_hashed_read_only_assets(api):
     model, reference = upload_assets(api)

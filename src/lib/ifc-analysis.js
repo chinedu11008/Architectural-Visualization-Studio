@@ -140,15 +140,15 @@ function summarizeSite(api, modelId) {
 }
 
 const TYPE_RULES = [
-  ['hospital', /hospital|clinic|medical|health.?care|patient|ward|surgery|emergency|ambulance/],
-  ['school', /school|classroom|education|university|college|student|teacher|nursery/],
-  ['worship', /church|mosque|temple|chapel|worship|sanctuary|congregation/],
-  ['hotel', /hotel|resort|guest.?room|hospitality|lobby|reception/],
-  ['industrial', /industrial|warehouse|factory|manufactur|logistics|distribution|workshop/],
-  ['retail', /retail|shop|store|mall|market|showroom|sales/],
-  ['office', /office|workplace|administration|conference|meeting|corporate/],
-  ['apartment', /apartment|flat|condominium|residential.?unit|multi.?family/],
-  ['house', /house|villa|dwelling|single.?family|residence|residential/],
+  ['hospital', /\b(?:hospital|clinic|medical|health.?care|patient|ward|surgery|emergency|ambulance)\b/],
+  ['school', /\b(?:school|classroom|education|university|college|student|teacher|nursery)\b/],
+  ['worship', /\b(?:church|mosque|temple|chapel|worship|sanctuary|congregation)\b/],
+  ['hotel', /\b(?:hotel|resort|guest.?room|hospitality)\b/],
+  ['industrial', /\b(?:industrial|warehouse|factory|manufactur\w*|logistics|distribution|workshop)\b/],
+  ['retail', /\b(?:retail|mall|market|showroom)\b/],
+  ['office', /\b(?:office|workplace|administration|conference|meeting|corporate)\b/],
+  ['apartment', /\b(?:apartment|flat|condominium|residential.?unit|multi.?family)\b/],
+  ['house', /\b(?:house|villa|dwelling|single.?family|residence|residential)\b/],
 ];
 
 function detectBuildingType(signals) {
@@ -172,14 +172,21 @@ function detectBuildingType(signals) {
   const ranked = Object.entries(scores).sort((first, second) => second[1] - first[1]);
   const [type, best] = ranked[0];
   const second = ranked[1]?.[1] || 0;
-  const confidence = type === 'other' ? 0.2 : Math.max(0.24, Math.min(0.96, 0.38 + best * 0.18 + (best - second) * 0.06));
+  const margin = best - second;
+  const hasClearMargin = margin >= Math.max(0.75, best * 0.25);
+  const baseConfidence = type === 'other' ? 0.2 : Math.max(0.24, Math.min(0.96, 0.38 + best * 0.18 + margin * 0.06));
+  const confidence = hasClearMargin ? baseConfidence : Math.min(0.57, baseConfidence);
   return {
     type: confidence >= 0.43 ? type : 'other',
     detectedType: type,
     confidence: Math.round(confidence * 100) / 100,
-    uncertain: confidence < 0.58,
+    uncertain: confidence < 0.58 || !hasClearMargin,
     signals: evidence[type] || [],
   };
+}
+
+export function inferBuildingTypeFromSignals(signals) {
+  return detectBuildingType(signals);
 }
 
 export function inferBuildingTypeFromText(text) {

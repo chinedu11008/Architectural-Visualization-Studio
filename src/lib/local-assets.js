@@ -2,6 +2,7 @@ const DATABASE_NAME = 'lumen-field-assets';
 const STORE_NAME = 'assets';
 const objectUrls = new Map();
 export const MAX_BROWSER_IFC_BYTES = 64 * 1024 * 1024;
+export const MAX_BROWSER_RVT_BYTES = 300 * 1024 * 1024;
 
 export function createLocalId() {
   const value = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
@@ -19,10 +20,13 @@ function openDatabase() {
 
 export async function saveLocalAsset(projectId, kind, file) {
   const id = createLocalId();
+  const fileKind = kind === 'model'
+    ? (String(file.name || '').toLowerCase().endsWith('.rvt') ? 'rvt' : 'ifc')
+    : kind;
   const record = {
     id,
     projectId,
-    kind,
+    kind: fileKind,
     filename: file.name || `${kind}.bin`,
     contentType: file.type || 'application/octet-stream',
     size: file.size,
@@ -41,7 +45,7 @@ export async function saveLocalAsset(projectId, kind, file) {
   return {
     id,
     localId: id,
-    kind: kind === 'model' ? 'ifc' : kind,
+    kind: fileKind,
     filename: record.filename,
     content_type: record.contentType,
     size_bytes: record.size,
@@ -67,4 +71,30 @@ export async function resolveLocalAssetUrl(id) {
   const url = URL.createObjectURL(blob);
   objectUrls.set(id, url);
   return url;
+}
+
+export async function deleteLocalAssetsForProject(projectId) {
+  const database = await openDatabase();
+  const removedIds = [];
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      for (const record of request.result || []) {
+        if (record.projectId !== projectId) continue;
+        removedIds.push(record.id);
+        store.delete(record.id);
+      }
+    };
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  }).finally(() => database.close());
+
+  for (const id of removedIds) {
+    const url = objectUrls.get(id);
+    if (url) URL.revokeObjectURL(url);
+    objectUrls.delete(id);
+  }
 }

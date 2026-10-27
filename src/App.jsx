@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard';
 import Workspace from './pages/Workspace';
 import Account from './pages/Account';
 import Subscription from './pages/Subscription';
+import { deleteLocalAssetsForProject } from './lib/local-assets';
 
 const STORAGE_KEY = 'lumen-field-projects-v1';
 const PROJECT_COVERS = {
@@ -34,7 +35,6 @@ const starterProjects = [
     id: 'aster-house',
     name: 'Aster House',
     client: 'Maya + Theo Bennett',
-    type: 'Residential',
     status: 'In review',
     updated: 'Today',
     image: '/project-covers/aster-house.svg',
@@ -46,7 +46,6 @@ const starterProjects = [
     id: 'brackwater',
     name: 'Brackwater House',
     client: 'Elliot Park',
-    type: 'Residential',
     status: 'In progress',
     updated: 'Yesterday',
     image: '/project-covers/brackwater.svg',
@@ -58,7 +57,6 @@ const starterProjects = [
     id: 'northline',
     name: 'Northline Studio',
     client: 'Northline Atelier',
-    type: 'Workplace',
     status: 'Approved',
     updated: 'Sep 28',
     image: '/project-covers/northline.svg',
@@ -72,19 +70,23 @@ function readProjects() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     const projects = stored ? JSON.parse(stored) : starterProjects;
-    return projects.map((project) => ({
-      ...project,
-      image: project.image?.startsWith('https://images.unsplash.com/')
-        ? (PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater)
-        : (project.image || PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater),
-      feedback: Array.isArray(project.feedback) ? project.feedback : [],
-      renders: Array.isArray(project.renders) ? project.renders : [],
-      versions: Array.isArray(project.versions)
-        ? project.versions
-        : project.direction
-          ? [{ id: `${project.id}-initial`, text: project.direction, createdAt: project.updated }]
-          : [],
-    }));
+    return projects.map((storedProject) => {
+      const project = { ...storedProject };
+      delete project.type;
+      return {
+        ...project,
+        image: project.image?.startsWith('https://images.unsplash.com/')
+          ? (PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater)
+          : (project.image || PROJECT_COVERS[project.id] || PROJECT_COVERS.brackwater),
+        feedback: Array.isArray(project.feedback) ? project.feedback : [],
+        renders: Array.isArray(project.renders) ? project.renders : [],
+        versions: Array.isArray(project.versions)
+          ? project.versions
+          : project.direction
+            ? [{ id: `${project.id}-initial`, text: project.direction, createdAt: project.updated }]
+            : [],
+      };
+    });
   } catch {
     return starterProjects.map((project) => ({
       ...project,
@@ -131,12 +133,11 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const createProject = ({ name, client, type }) => {
+  const createProject = ({ name, client }) => {
     const project = {
       id: `project-${Date.now()}`,
       name,
       client: client || 'New client',
-      type,
       status: 'In progress',
       updated: 'Just now',
       image: '/project-covers/brackwater.svg',
@@ -160,6 +161,29 @@ export default function App() {
     )));
   };
 
+  const deleteProject = async (id) => {
+    const project = projects.find((item) => item.id === id);
+    if (!project) return;
+    const hasRemoteAssets = [project.modelAsset, project.sourceModelAsset, project.referenceAsset, ...(project.renders || [])]
+      .some((asset) => asset && !asset.localOnly);
+
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw new Error(`API request failed (${response.status})`);
+    } catch (error) {
+      if (hasRemoteAssets) {
+        throw new Error(`Could not delete the project's server files. Check that the local API is running and try again. ${error.message}`);
+      }
+    }
+
+    await deleteLocalAssetsForProject(id);
+    setProjects((current) => current.filter((item) => item.id !== id));
+    if (route.page === 'workspace' && route.projectId === id) setRoute({ page: 'dashboard' });
+  };
+
   const navigate = (target) => {
     if (['signin', 'dashboard', 'workspace', 'account', 'subscription'].includes(target)) {
       setRoute(target === 'workspace'
@@ -172,7 +196,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-page">
       {page === 'signin' && <SignIn onNavigate={navigate} />}
-      {page === 'dashboard' && <Dashboard projects={projects} onNavigate={navigate} onOpenProject={openProject} onCreateProject={createProject} />}
+      {page === 'dashboard' && <Dashboard projects={projects} onNavigate={navigate} onOpenProject={openProject} onCreateProject={createProject} onDeleteProject={deleteProject} />}
       {page === 'workspace' && activeProject && <Workspace project={activeProject} onUpdateProject={(changes) => updateProject(activeProject.id, changes)} onNavigate={navigate} />}
       {page === 'account' && <Account onNavigate={navigate} />}
       {page === 'subscription' && <Subscription onNavigate={navigate} />}

@@ -233,14 +233,9 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
   const minY = bounds.min.y;
   const maxY = bounds.max.y;
   const floor = bounds.min.z - Math.max(radius * 0.002, 0.02);
-  const setback = Math.max(10, Math.min(36, Math.max(size.x, size.y) * 0.8));
+  const setback = siteBounds ? 0 : Math.max(10, Math.min(36, Math.max(size.x, size.y) * 0.8));
   const plot = siteBounds
-    ? {
-      minX: Math.min(siteBounds.min.x, minX - setback),
-      maxX: Math.max(siteBounds.max.x, maxX + setback),
-      minY: Math.min(siteBounds.min.y, minY - setback),
-      maxY: Math.max(siteBounds.max.y, maxY + setback),
-    }
+    ? { minX: siteBounds.min.x, maxX: siteBounds.max.x, minY: siteBounds.min.y, maxY: siteBounds.max.y }
     : { minX: minX - setback, maxX: maxX + setback, minY: minY - setback, maxY: maxY + setback };
   const frontSide = entrance?.side || 'south';
   const isHorizontalFront = frontSide === 'south' || frontSide === 'north';
@@ -810,7 +805,7 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
     }
   }
 
-  group.userData.layout = { buildingType, seed, setback, gateWidth, frontSide };
+  group.userData.layout = { buildingType, seed, setback, gateWidth, frontSide, plotBounds: { ...plot } };
   return group;
 }
 

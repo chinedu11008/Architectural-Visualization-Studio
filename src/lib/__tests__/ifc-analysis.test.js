@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import * as THREE from 'three';
-import { analyzeIfcModel, completeIfcAnalysis } from '../ifc-analysis';
+import { analyzeIfcModel, completeIfcAnalysis, inferBuildingTypeFromSignals, inferBuildingTypeFromText } from '../ifc-analysis';
 
 function list(values) {
   return { size: () => values.length, get: (index) => values[index] };
@@ -42,6 +42,33 @@ function makeIfcApi() {
 }
 
 describe('IFC analysis', () => {
+  it.each(['Walk-in Wardrobe', 'Small Bedroom', 'Storeroom'])(
+    'does not let the room name %s misclassify a house',
+    (roomName) => {
+      const detected = inferBuildingTypeFromSignals([
+        { label: 'Building name', value: 'Family House', weight: 1.2 },
+        { label: `Space name: ${roomName}`, value: roomName, weight: 0.65 },
+      ]);
+      expect(detected.type).toBe('house');
+      expect(['hospital', 'retail']).not.toContain(detected.detectedType);
+    },
+  );
+
+  it('does not treat generic words as building type signals', () => {
+    expect(inferBuildingTypeFromText('Walk-in Wardrobe')).toBe('other');
+    expect(inferBuildingTypeFromText('Small Bedroom')).toBe('other');
+    expect(inferBuildingTypeFromText('Storeroom')).toBe('other');
+  });
+
+  it('marks near-tied type evidence as uncertain', () => {
+    const detected = inferBuildingTypeFromSignals([
+      { label: 'Project', value: 'Hospital', weight: 1 },
+      { label: 'Building', value: 'Office', weight: 1 },
+    ]);
+    expect(detected.uncertain).toBe(true);
+    expect(detected.confidence).toBeLessThan(0.58);
+  });
+
   it('associates elements with storeys through spatial containment', () => {
     const result = analyzeIfcModel(makeIfcApi(), 7);
     expect(result.storeys).toEqual([{ id: 201, name: 'Level 01', elevation: 0 }]);

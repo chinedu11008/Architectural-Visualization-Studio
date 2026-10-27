@@ -1,17 +1,15 @@
 import { useMemo, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import Header from '../components/Header';
-
-const filters = ['All projects', 'In progress', 'In review', 'Approved'];
 
 function ProjectForm({ onClose, onCreate }) {
   const [name, setName] = useState('');
   const [client, setClient] = useState('');
-  const [type, setType] = useState('Residential');
 
   const submit = (event) => {
     event.preventDefault();
     if (!name.trim()) return;
-    onCreate({ name: name.trim(), client: client.trim(), type });
+    onCreate({ name: name.trim(), client: client.trim() });
   };
 
   return (
@@ -30,11 +28,6 @@ function ProjectForm({ onClose, onCreate }) {
         <label className="flex flex-col gap-1 text-ink-4 text-[12px]">Client or practice
           <input maxLength={70} value={client} onChange={(event) => setClient(event.target.value)} placeholder="e.g. Jamie Rivera" className="bg-page border border-line rounded-[4px] px-3 py-2.5 text-ink outline-none focus:border-accent" />
         </label>
-        <label className="flex flex-col gap-1 text-ink-4 text-[12px]">Project type
-          <select value={type} onChange={(event) => setType(event.target.value)} className="bg-page border border-line rounded-[4px] px-3 py-2.5 text-ink outline-none focus:border-accent">
-            <option>Residential</option><option>Workplace</option><option>Hospitality</option><option>Public space</option>
-          </select>
-        </label>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={onClose} className="border border-line text-ink-3 px-4 py-2 rounded-[4px] text-[12px]">Cancel</button>
           <button type="submit" className="bg-primary text-on-primary px-4 py-2 rounded-[4px] text-[12px]">Create project</button>
@@ -44,21 +37,34 @@ function ProjectForm({ onClose, onCreate }) {
   );
 }
 
-export default function Dashboard({ projects, onNavigate, onOpenProject, onCreateProject }) {
+export default function Dashboard({ projects, onNavigate, onOpenProject, onCreateProject, onDeleteProject }) {
   const [query, setQuery] = useState('');
-  const [filter, setFilter] = useState('All projects');
   const [formOpen, setFormOpen] = useState(false);
+  const [deletingProjectId, setDeletingProjectId] = useState(null);
+  const [deleteError, setDeleteError] = useState('');
   const visibleProjects = useMemo(() => projects.filter((project) => {
-    const matchesFilter = filter === 'All projects' || project.status === filter;
-    const search = `${project.name} ${project.client} ${project.type}`.toLowerCase();
-    return matchesFilter && search.includes(query.toLowerCase());
-  }), [projects, query, filter]);
+    const search = `${project.name} ${project.client}`.toLowerCase();
+    return search.includes(query.toLowerCase());
+  }), [projects, query]);
   const renderCount = projects.reduce((count, project) => count + (project.renders?.length || 0), 0);
   const feedbackCount = projects.reduce((count, project) => count + (project.feedback?.length || 0), 0);
 
   const create = (details) => {
     setFormOpen(false);
     onCreateProject(details);
+  };
+
+  const removeProject = async (project) => {
+    if (!window.confirm(`Delete “${project.name}” and its saved files and renders? This cannot be undone.`)) return;
+    setDeleteError('');
+    setDeletingProjectId(project.id);
+    try {
+      await onDeleteProject(project.id);
+    } catch (error) {
+      setDeleteError(error.message || 'The project could not be deleted.');
+    } finally {
+      setDeletingProjectId(null);
+    }
   };
 
   return (
@@ -98,11 +104,7 @@ export default function Dashboard({ projects, onNavigate, onOpenProject, onCreat
                 <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search projects or clients" aria-label="Search projects or clients" className="bg-transparent text-ink text-[12px] outline-none w-full placeholder:text-muted-2" />
               </label>
             </div>
-            <div className="flex gap-2 overflow-x-auto pb-1" role="group" aria-label="Filter projects">
-              {filters.map((item) => (
-                <button key={item} onClick={() => setFilter(item)} className={`shrink-0 px-3 py-1.5 rounded-[4px] text-[11px] border transition-colors ${filter === item ? 'bg-primary text-on-primary border-primary' : 'border-line text-muted hover:text-ink'}`}>{item}</button>
-              ))}
-            </div>
+            {deleteError && <p role="alert" className="text-red-300 text-[12px]">{deleteError}</p>}
 
             {visibleProjects.length ? (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -110,15 +112,26 @@ export default function Dashboard({ projects, onNavigate, onOpenProject, onCreat
                   <article key={project.id} className="border border-line rounded-[6px] overflow-hidden bg-page flex flex-col">
                     <button onClick={() => onOpenProject(project.id)} className="relative h-[180px] text-left overflow-hidden group" style={{ backgroundImage: `linear-gradient(0deg, rgba(8,13,17,.72), transparent 55%), url('${project.image}')`, backgroundSize: 'cover', backgroundPosition: 'center' }} aria-label={`Open ${project.name}`}>
                       <span className="absolute bottom-3 left-3 text-[9px] uppercase tracking-[1px] text-white/80">Studio reference</span>
-                      <span className="absolute top-3 right-3 bg-black/55 text-white text-[10px] px-2 py-1 rounded-[3px]">{project.status}</span>
                     </button>
                     <div className="p-4 flex flex-col gap-3 flex-1">
                       <div className="flex justify-between gap-3 items-start">
                         <div className="min-w-0">
                           <h3 className="text-ink font-bold text-[15px] truncate">{project.name}</h3>
-                          <p className="text-muted text-[11px] mt-1 truncate">{project.client} <span className="mx-1.5">·</span> {project.type}</p>
+                          {project.client && <p className="text-muted text-[11px] mt-1 truncate">{project.client}</p>}
                         </div>
-                        <span className="text-muted text-[10px] whitespace-nowrap">{project.updated}</span>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => removeProject(project)}
+                            disabled={deletingProjectId === project.id}
+                            aria-label={`Delete ${project.name}`}
+                            title={`Delete ${project.name}`}
+                            className="flex items-center justify-center w-7 h-7 rounded-[4px] text-muted hover:text-red-300 hover:bg-white/5 disabled:opacity-50"
+                          >
+                            <Trash2 size={14} aria-hidden="true" />
+                          </button>
+                          <span className="text-muted text-[10px] whitespace-nowrap">{project.updated}</span>
+                        </div>
                       </div>
                       <p className="text-ink-4 text-[12px] leading-5 line-clamp-2 min-h-10">{project.direction || 'Add a visual direction to start the client review.'}</p>
                       <div className="flex items-center justify-between border-t border-line-2 pt-3 mt-auto">
@@ -133,7 +146,7 @@ export default function Dashboard({ projects, onNavigate, onOpenProject, onCreat
               <div className="border border-dashed border-line rounded-[6px] py-14 px-5 text-center">
                 <h3 className="text-ink font-bold text-[15px]">No projects match that view.</h3>
                 <p className="text-muted text-[12px] mt-2">Clear your search or start a new project.</p>
-                <button onClick={() => { setQuery(''); setFilter('All projects'); setFormOpen(true); }} className="text-accent text-[12px] mt-4">＋ Create a project</button>
+                <button onClick={() => { setQuery(''); setFormOpen(true); }} className="text-accent text-[12px] mt-4">＋ Create a project</button>
               </div>
             )}
           </section>

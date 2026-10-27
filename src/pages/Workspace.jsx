@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Download } from 'lucide-react';
 import UserDropdown from '../components/UserDropdown';
-import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
+import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, MAX_BROWSER_RVT_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
 import {
   BUILDING_ROLE_LABELS,
   BUILDING_TYPES,
@@ -25,7 +25,8 @@ async function readApiResponse(response) {
 }
 
 async function uploadAsset(projectId, kind, file) {
-  const previewBlocked = kind === 'model' && file.size > MAX_BROWSER_IFC_BYTES;
+  const isRvt = kind === 'model' && file.name.toLowerCase().endsWith('.rvt');
+  const previewBlocked = kind === 'model' && !isRvt && file.size > MAX_BROWSER_IFC_BYTES;
   const previewWarning = previewBlocked ? 'Preview blocked: this IFC exceeds the 64 MiB browser preview limit.' : '';
   let localAsset;
   try {
@@ -47,11 +48,12 @@ async function uploadAsset(projectId, kind, file) {
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/assets/${kind}`, {
       method: 'POST',
       body: formData,
-      signal: AbortSignal.timeout(8000),
+      signal: AbortSignal.timeout(isRvt ? 10 * 60 * 1000 : 8000),
     });
     return {
       ...(await readApiResponse(response)),
       localId: localAsset?.localId,
+      localUrl: localAsset?.url,
       localOnly: false,
       previewBlocked,
       uploadError: previewWarning,
@@ -92,6 +94,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [activePanel, setActivePanel] = useState('inputs');
   const [prompt, setPrompt] = useState(project.prompt || project.direction || '');
   const [modelReady, setModelReady] = useState(false);
+  const [modelLocalUrl, setModelLocalUrl] = useState(null);
   const autoCutawayModelIdRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [referenceAsset, setReferenceAsset] = useState(project.referenceAsset || null);
@@ -120,7 +123,11 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     .filter((render) => render.resultAssetId || render.localId)
     .map((render) => ({ ...render, url: localRenderUrls[render.localId] || render.url }));
   const activeRender = renders.find((render) => render.id === activeRenderId);
-  const model = project.modelAsset?.kind === 'ifc' ? project.modelAsset : null;
+  const model = useMemo(() => {
+    if (project.modelAsset?.kind !== 'ifc') return null;
+    return modelLocalUrl ? { ...project.modelAsset, url: modelLocalUrl } : project.modelAsset;
+  }, [modelLocalUrl, project.modelAsset]);
+  const sourceModelAsset = project.sourceModelAsset || null;
   const referenceName = referenceAsset?.filename || '';
   const referenceEnvironment = referenceHints?.contextStyle?.sky?.environment || 'clear';
   const inferredEnvironment = useMemo(() => inferEnvironment(prompt, referenceEnvironment), [prompt, referenceEnvironment]);
@@ -153,6 +160,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   useEffect(() => {
     setPrompt(project.prompt || project.direction || '');
     setReferenceAsset(project.referenceAsset || null);
+    setModelLocalUrl(null);
     setCamera(project.sceneContext?.camera || 'isometric');
     setLighting(project.sceneContext?.lighting || 'daylight');
     setMaterialStyle(project.referenceAsset ? 'reference' : (project.sceneContext?.materialStyle || 'source'));
@@ -187,8 +195,10 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
         if (assetsRes?.ok) {
           const assets = await assetsRes.json().catch(() => []);
           const ifcAsset = assets.find((a) => a.kind === 'ifc');
+          const rvtAsset = assets.find((a) => a.kind === 'rvt');
           const refAsset = assets.find((a) => a.kind === 'reference');
-          if (ifcAsset && !project.modelAsset) updates.modelAsset = ifcAsset;
+          if (ifcAsset && !project.modelAsset && !project.sourceModelAsset) updates.modelAsset = ifcAsset;
+          if (rvtAsset && !project.sourceModelAsset) updates.sourceModelAsset = rvtAsset;
           if (refAsset && !project.referenceAsset) updates.referenceAsset = refAsset;
         }
         if (jobsRes?.ok) {
@@ -228,6 +238,16 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     syncServerData();
     return () => { cancelled = true; };
   }, [project.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setModelLocalUrl(null);
+    if (!project.modelAsset?.localId) return () => { cancelled = true; };
+    resolveLocalAssetUrl(project.modelAsset.localId).then((url) => {
+      if (!cancelled && url) setModelLocalUrl(url);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [project.id, project.modelAsset?.id, project.modelAsset?.localId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -341,29 +361,39 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     const file = event.target.files?.[0];
     if (!file) return;
     const extension = `.${file.name.split('.').pop().toLowerCase()}`;
-    if (extension !== '.ifc') {
-      setNotice('For this IFC-first version, export your Revit or Archicad model as IFC4 or IFC2x3.');
+    if (!['.ifc', '.rvt'].includes(extension)) {
+      setNotice('Choose an IFC file or a Revit project (.rvt).');
       event.target.value = '';
       return;
     }
-    if (file.size > 300 * 1024 * 1024) {
-      setNotice('IFC files larger than 300 MiB cannot be stored in the browser.');
+    const maxBytes = extension === '.ifc' ? 300 * 1024 * 1024 : MAX_BROWSER_RVT_BYTES;
+    if (file.size > maxBytes) {
+      setNotice(`${extension === '.rvt' ? 'RVT' : 'IFC'} files larger than 300 MiB are not supported.`);
       event.target.value = '';
       return;
     }
     setUploading(true);
-    setNotice(`Uploading ${file.name} to the local IFC service…`);
+    setNotice(extension === '.rvt' ? `Saving ${file.name} locally…` : `Loading ${file.name}…`);
     try {
-      const asset = await uploadAsset(project.id, 'model', file);
-      onUpdateProject({ modelAsset: asset, ifcAnalysis: null, renders: [] });
-      setActiveRenderId(null);
-      setNotice(asset.uploadError
-        ? `${asset.filename} · ${asset.uploadError}`
-        : asset.localOnly
-          ? `${asset.filename} saved on this device · local API unavailable (${asset.uploadError || 'offline'}).`
-          : `${asset.filename} uploaded · saved on this device for offline use.`);
+      const uploadedAsset = await uploadAsset(project.id, 'model', file);
+      if (extension === '.rvt') {
+        setModelReady(false);
+        setModelLocalUrl(null);
+        onUpdateProject({ modelAsset: null, sourceModelAsset: uploadedAsset, ifcAnalysis: null, renders: [] });
+        setActiveRenderId(null);
+        setNotice(`${file.name} is saved locally. Open it in Revit 2019, use Add-Ins → Lumen / Field: Export IFC, then choose the exported .ifc here. Conversion and rendering stay on this device.`);
+      } else {
+        setModelLocalUrl(uploadedAsset.localUrl || null);
+        onUpdateProject({ modelAsset: uploadedAsset, ifcAnalysis: null, renders: [] });
+        setActiveRenderId(null);
+        setNotice(uploadedAsset.uploadError
+          ? `${uploadedAsset.filename} · ${uploadedAsset.uploadError}`
+          : uploadedAsset.localOnly
+            ? `${uploadedAsset.filename} saved on this device · local API unavailable (${uploadedAsset.uploadError || 'offline'}).`
+            : `${uploadedAsset.filename} uploaded · saved on this device for offline use.`);
+      }
     } catch (error) {
-      setNotice(error.message || 'IFC upload failed. Start the local API and retry.');
+      setNotice(error.message || 'The model could not be saved on this device. Check browser storage and try again.');
     } finally {
       setUploading(false);
       event.target.value = '';
@@ -658,7 +688,6 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     const brief = [
       `${project.name || 'Untitled Project'} — Visualization brief`,
       `Client: ${project.client || 'New client'}`,
-      `Project type: ${project.type || 'Residential'}`,
       `Status: ${project.status || 'In progress'}`,
       `Model: ${model?.filename || 'Not selected'}`,
       `Reference image: ${referenceName || 'Not selected'}`,
@@ -716,7 +745,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           <span className="text-line">/</span>
           <span className="text-ink-2 truncate max-w-[220px]">{project.name}</span>
           <span className="text-line">/</span>
-          <span className="text-muted truncate">{model?.filename || 'No IFC selected'}</span>
+          <span className="text-muted truncate">{model?.filename || sourceModelAsset?.filename || 'No model selected'}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <span className={`hidden sm:inline-flex items-center gap-1.5 text-[10px] ${project.status === 'Approved' ? 'text-green-300' : 'text-accent'}`}><span className="w-1.5 h-1.5 rounded-full bg-current" />{project.status}</span>
@@ -756,8 +785,8 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                 <div className="flex flex-col px-4 py-4 gap-5">
                   <section>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-muted text-[10px] uppercase">01 · IFC model</span>
-                      <span className="text-muted-2 text-[9px]">IFC4 · IFC2x3</span>
+                      <span className="text-muted text-[10px] uppercase">01 · Building model</span>
+                      <span className="text-muted-2 text-[9px]">IFC · RVT</span>
                     </div>
                     {model ? (
                       <div className="border border-line rounded-[5px] p-3 flex items-center gap-3">
@@ -766,20 +795,38 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                           <p className="text-ink text-[11px] truncate">{model.filename}</p>
                           <p className="text-muted text-[9px] mt-1">{((model.size_bytes || 0) / (1024 * 1024)).toFixed(1)} MiB · {model.previewBlocked ? 'preview blocked' : modelReady ? 'geometry loaded' : 'loading geometry'}</p>
                         </div>
-                        <button onClick={() => { setModelReady(false); onUpdateProject({ modelAsset: null, renders: [] }); setActiveRenderId(null); }} aria-label="Remove model" className="text-muted hover:text-ink">×</button>
+                        <button onClick={() => { setModelReady(false); setModelLocalUrl(null); onUpdateProject({ modelAsset: null, sourceModelAsset: null, renders: [] }); setActiveRenderId(null); }} aria-label="Remove model" className="text-muted hover:text-ink">×</button>
+                      </div>
+                    ) : sourceModelAsset ? (
+                      <div className="border border-line rounded-[5px] p-3 flex items-center gap-3">
+                        <div className="w-9 h-9 rounded-[4px] bg-sunken border border-line flex items-center justify-center text-accent text-[10px] shrink-0">RVT</div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-ink text-[11px] truncate">{sourceModelAsset.filename}</p>
+                          <p className="text-muted text-[9px] mt-1">Saved locally · waiting for IFC export</p>
+                        </div>
+                        <button onClick={() => onUpdateProject({ sourceModelAsset: null })} aria-label="Remove Revit source" className="text-muted hover:text-ink">×</button>
                       </div>
                     ) : (
                       <div className="border border-dashed border-line rounded-[5px] px-3 py-4 text-center">
-                        <p className="text-ink-3 text-[11px]">Choose an IFC building model</p>
-                        <p className="text-muted text-[9px] mt-1">Export IFC4 or IFC2x3 from Revit or Archicad.</p>
+                        <p className="text-ink-3 text-[11px]">Choose an IFC or Revit model</p>
+                        <p className="text-muted text-[9px] mt-1">RVT conversion runs locally through Revit 2019.</p>
                       </div>
                     )}
+                    {model && sourceModelAsset && <p className="text-muted text-[9px] mt-1">Original Revit file retained with this project.</p>}
+                    {sourceModelAsset && !model && <div className="mt-2 rounded-[5px] border border-line bg-sunken p-3 text-[9px] text-muted">
+                      <p className="text-ink-3 font-semibold">Render this RVT offline</p>
+                      <ol className="list-decimal pl-4 mt-1.5 space-y-1">
+                        <li>Install the Lumen / Field Revit 2019 add-in from this project's <code>revit-bridge</code> folder, then restart Revit.</li>
+                        <li>Open the model in Revit and choose <span className="text-ink-3">Add-Ins → Lumen / Field: Export IFC</span>.</li>
+                        <li>Choose the exported IFC below. The viewer reads it locally.</li>
+                      </ol>
+                    </div>}
                     <div className="grid grid-cols-2 gap-2 mt-2">
                       <label className="border border-line rounded-[4px] text-accent text-[10px] py-2 text-center cursor-pointer hover:border-accent">
-                        {uploading ? 'Uploading…' : '+ Choose IFC file'}
-                        <input type="file" accept=".ifc,application/x-step" onChange={handleModelUpload} className="sr-only" disabled={uploading} />
+                        {uploading ? 'Saving locally…' : sourceModelAsset && !model ? '+ Choose exported IFC' : '+ Choose IFC or RVT'}
+                        <input type="file" accept=".ifc,.rvt,application/x-step,application/vnd.autodesk.revit" onChange={handleModelUpload} className="sr-only" disabled={uploading} />
                       </label>
-                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">Preview &lt;= 64 MiB</span>
+                      <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">IFC preview ≤64 MiB</span>
                     </div>
                   </section>
 
@@ -894,7 +941,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                     <button onClick={generateRender} disabled={!readyToRender} className={`w-full flex items-center justify-center gap-2 py-3 rounded-[5px] font-medium text-[12px] transition-colors ${readyToRender ? 'bg-primary text-on-primary hover:bg-primary-hover' : 'bg-sunken text-muted cursor-not-allowed'}`}>
                       {rendering ? <><span className="animate-spin">◌</span> Rendering locked geometry…</> : '✦ Render IFC model'}
                     </button>
-                    {!readyToRender && <p className="text-muted text-[9px] text-center">Upload an IFC and reference image, then wait for geometry loading.</p>}
+                    {!readyToRender && <p className="text-muted text-[9px] text-center">Upload an IFC or convert an RVT, then add a reference image and wait for geometry loading.</p>}
                   </div>
                 </div>
               ) : (

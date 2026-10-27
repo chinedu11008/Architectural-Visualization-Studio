@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -14,7 +15,7 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -23,6 +24,7 @@ DATA_DIR = Path(os.environ.get("LUMEN_DATA_DIR", BACKEND_DIR / ".data"))
 ASSET_DIR = DATA_DIR / "assets"
 DB_PATH = DATA_DIR / "lumen.sqlite3"
 MAX_IFC_BYTES = 64 * 1024 * 1024
+MAX_RVT_BYTES = 300 * 1024 * 1024
 MAX_IMAGE_BYTES = 25 * 1024 * 1024
 CHUNK_SIZE = 1024 * 1024
 
@@ -47,12 +49,38 @@ def init_db() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     with connect_db() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        existing = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'assets'"
+        ).fetchone()
+        if existing and "'rvt'" not in (existing["sql"] or ""):
+            connection.executescript(
+                """
+                BEGIN IMMEDIATE;
+                CREATE TABLE assets_with_rvt (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('ifc', 'rvt', 'reference', 'render')),
+                    filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL,
+                    size_bytes INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    storage_name TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL
+                );
+                INSERT INTO assets_with_rvt SELECT * FROM assets;
+                DROP TABLE assets;
+                ALTER TABLE assets_with_rvt RENAME TO assets;
+                COMMIT;
+                """
+            )
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS assets (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
-                kind TEXT NOT NULL CHECK (kind IN ('ifc', 'reference', 'render')),
+                kind TEXT NOT NULL CHECK (kind IN ('ifc', 'rvt', 'reference', 'render')),
                 filename TEXT NOT NULL,
                 content_type TEXT NOT NULL,
                 size_bytes INTEGER NOT NULL,
@@ -93,7 +121,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    allow_methods=["DELETE", "GET", "POST"],
     allow_headers=["Content-Type"],
 )
 
@@ -193,6 +221,8 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
     suffix = Path(filename).suffix.lower()
     if kind == "ifc" and suffix != ".ifc":
         raise HTTPException(status_code=415, detail="IFC STEP files (.ifc) are supported")
+    if kind == "rvt" and suffix != ".rvt":
+        raise HTTPException(status_code=415, detail="Revit project files (.rvt) are supported")
     if kind == "reference" and suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
         raise HTTPException(status_code=415, detail="Use a JPG, PNG, or WebP reference image")
     if kind == "render" and suffix != ".png":
@@ -205,7 +235,7 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
     size = 0
     prefix = bytearray()
     tail = b""
-    max_bytes = MAX_IFC_BYTES if kind == "ifc" else MAX_IMAGE_BYTES
+    max_bytes = MAX_IFC_BYTES if kind == "ifc" else MAX_RVT_BYTES if kind == "rvt" else MAX_IMAGE_BYTES
     try:
         with destination.open("xb") as target:
             while chunk := await upload.read(CHUNK_SIZE):
@@ -219,7 +249,11 @@ async def store_upload(project_id: str, kind: str, upload: UploadFile) -> sqlite
                 target.write(chunk)
         if size == 0:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
-        content_type = "application/x-step" if kind == "ifc" else upload.content_type or "application/octet-stream"
+        content_type = (
+            "application/x-step" if kind == "ifc"
+            else "application/vnd.autodesk.revit" if kind == "rvt"
+            else upload.content_type or "application/octet-stream"
+        )
         if kind == "ifc" and (b"ISO-10303-21" not in prefix or b"END-ISO-10303-21" not in tail):
             raise HTTPException(status_code=422, detail="The file does not have a valid IFC STEP header and terminator")
         if kind in {"reference", "render"}:
@@ -347,9 +381,35 @@ def health() -> dict:
     return {"ok": True, "service": "lumen-local-api", "geometry_policy": "immutable"}
 
 
+@app.delete("/api/projects/{project_id}", status_code=204)
+def delete_project(project_id: str) -> Response:
+    with connect_db() as connection:
+        assets = connection.execute(
+            "SELECT id, storage_name FROM assets WHERE project_id = ?", (project_id,)
+        ).fetchall()
+        connection.execute("DELETE FROM render_jobs WHERE project_id = ?", (project_id,))
+        connection.execute("DELETE FROM assets WHERE project_id = ?", (project_id,))
+
+    asset_root = ASSET_DIR.resolve()
+    for asset in assets:
+        path = (ASSET_DIR / asset["storage_name"]).resolve()
+        if path.parent != asset_root:
+            continue
+        try:
+            os.chmod(path, 0o600)
+            path.unlink(missing_ok=True)
+        except OSError:
+            continue
+        with _asset_verification_cache_lock:
+            _asset_verification_cache.pop(str(path), None)
+    return Response(status_code=204)
+
+
 @app.post("/api/projects/{project_id}/assets/model", status_code=201)
 async def upload_model(project_id: str, file: UploadFile = File(...)) -> dict:
-    row = await store_upload(project_id, "ifc", file)
+    suffix = Path(file.filename or "").suffix.lower()
+    kind = "rvt" if suffix == ".rvt" else "ifc"
+    row = await store_upload(project_id, kind, file)
     return asset_dict(row)
 
 
@@ -375,7 +435,7 @@ def get_asset_content(asset_id: str) -> FileResponse:
 def create_render_job(request: CreateRenderJob) -> dict:
     model = lookup_asset(request.model_asset_id)
     reference = lookup_asset(request.reference_asset_id)
-    if model["kind"] != "ifc":
+    if model["kind"] != "ifc" or Path(model["filename"]).suffix.lower() != ".ifc":
         raise HTTPException(status_code=415, detail="Render jobs require an IFC source model")
     if reference["kind"] != "reference":
         raise HTTPException(status_code=415, detail="Render jobs require a reference image asset")
