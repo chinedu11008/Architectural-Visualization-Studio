@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Camera, Download } from 'lucide-react';
 import UserDropdown from '../components/UserDropdown';
-import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, MAX_BROWSER_RVT_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
+import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, MAX_BROWSER_RVT_BYTES, MAX_BROWSER_RVT_PARSE_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
 import {
   BUILDING_ROLE_LABELS,
   BUILDING_TYPES,
@@ -10,6 +10,7 @@ import {
 } from '../lib/building-rules';
 import { inspectReference, REFERENCE_PALETTE_VERSION, rolesFromPalette } from '../lib/reference-palette';
 import { inferBuildingTypeFromText } from '../lib/ifc-analysis';
+import { convertRvtFile } from '../lib/rvt/local-rvt';
 
 const IfcViewer = lazy(() => import('../components/IfcViewer'));
 
@@ -375,16 +376,50 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     setUploading(true);
     setNotice(extension === '.rvt' ? `Saving ${file.name} locally…` : `Loading ${file.name}…`);
     try {
-      const uploadedAsset = await uploadAsset(project.id, 'model', file);
+      // Keep RVT bytes in IndexedDB and process them in a local worker. Do not
+      // send the source file to an API or cloud converter.
+      const uploadedAsset = extension === '.rvt'
+        ? await saveLocalAsset(project.id, 'model', file)
+        : await uploadAsset(project.id, 'model', file);
       if (extension === '.rvt') {
         setModelReady(false);
         setModelLocalUrl(null);
-        onUpdateProject({ modelAsset: null, sourceModelAsset: uploadedAsset, ifcAnalysis: null, renders: [] });
+        onUpdateProject({ modelAsset: null, sourceModelAsset: uploadedAsset, rvtImportDiagnostics: null, ifcAnalysis: null, renders: [] });
         setActiveRenderId(null);
-        setNotice(`${file.name} is saved locally. Open it in Revit 2019, use Add-Ins → Lumen / Field: Export IFC, then choose the exported .ifc here. Conversion and rendering stay on this device.`);
+        if (file.size > MAX_BROWSER_RVT_PARSE_BYTES) {
+          setNotice(`${file.name} is saved on this device, but direct RVT parsing is limited to 64 MiB to protect browser memory. You can still choose an IFC file.`);
+          return;
+        }
+
+        setNotice(`Reading ${file.name} locally…`);
+        const { ifcBytes, diagnostics } = await convertRvtFile(file, { onProgress: setNotice });
+        if (ifcBytes.byteLength > MAX_BROWSER_IFC_BYTES) {
+          throw new Error(`The converted IFC is ${(ifcBytes.byteLength / (1024 * 1024)).toFixed(1)} MiB. The browser viewer limit is 64 MiB.`);
+        }
+        const ifcName = `${file.name.replace(/\.rvt$/i, '')}.ifc`;
+        const ifcFile = new File([ifcBytes], ifcName, { type: 'application/x-step' });
+        const localIfcAsset = await saveLocalAsset(project.id, 'model', ifcFile);
+        const modelAsset = {
+          ...localIfcAsset,
+          localUrl: localIfcAsset.url,
+          sourceFormat: 'rvt',
+          parserVersion: 'rvt-rs 0.10.0',
+        };
+        setModelLocalUrl(localIfcAsset.url);
+        onUpdateProject({ modelAsset, sourceModelAsset: uploadedAsset, rvtImportDiagnostics: diagnostics, ifcAnalysis: null, renders: [] });
+        const summary = diagnostics
+          ? `${diagnostics.elementCount.toLocaleString()} elements, ${diagnostics.geometryCount.toLocaleString()} with geometry`
+          : 'IFC geometry prepared';
+        const versionLabel = diagnostics?.revitVersion ? `Revit ${diagnostics.revitVersion}` : 'This Revit version';
+        const qualityNotes = [
+          diagnostics?.boundingBoxCount ? `${diagnostics.boundingBoxCount.toLocaleString()} bodies are bounding boxes` : null,
+          diagnostics?.geometryGapConditions ? `${diagnostics.geometryGapConditions.toLocaleString()} geometry-gap conditions` : null,
+          diagnostics?.warningCount ? `${diagnostics.warningCount} parser warnings` : null,
+        ].filter(Boolean);
+        setNotice(`${file.name} read locally. ${summary}. ${versionLabel} support is ${diagnostics?.support || 'experimental'}${qualityNotes.length ? `; ${qualityNotes.join('; ')}` : ''}.`);
       } else {
         setModelLocalUrl(uploadedAsset.localUrl || null);
-        onUpdateProject({ modelAsset: uploadedAsset, ifcAnalysis: null, renders: [] });
+        onUpdateProject({ modelAsset: uploadedAsset, sourceModelAsset: null, rvtImportDiagnostics: null, ifcAnalysis: null, renders: [] });
         setActiveRenderId(null);
         setNotice(uploadedAsset.uploadError
           ? `${uploadedAsset.filename} · ${uploadedAsset.uploadError}`
@@ -802,28 +837,24 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                         <div className="w-9 h-9 rounded-[4px] bg-sunken border border-line flex items-center justify-center text-accent text-[10px] shrink-0">RVT</div>
                         <div className="min-w-0 flex-1">
                           <p className="text-ink text-[11px] truncate">{sourceModelAsset.filename}</p>
-                          <p className="text-muted text-[9px] mt-1">Saved locally · waiting for IFC export</p>
+                          <p className="text-muted text-[9px] mt-1">Original Revit file saved on this device</p>
                         </div>
                         <button onClick={() => onUpdateProject({ sourceModelAsset: null })} aria-label="Remove Revit source" className="text-muted hover:text-ink">×</button>
                       </div>
                     ) : (
                       <div className="border border-dashed border-line rounded-[5px] px-3 py-4 text-center">
                         <p className="text-ink-3 text-[11px]">Choose an IFC or Revit model</p>
-                        <p className="text-muted text-[9px] mt-1">RVT conversion runs locally through Revit 2019.</p>
+                        <p className="text-muted text-[9px] mt-1">RVT files are parsed locally in your browser.</p>
                       </div>
                     )}
-                    {model && sourceModelAsset && <p className="text-muted text-[9px] mt-1">Original Revit file retained with this project.</p>}
+                    {model && sourceModelAsset && <p className="text-muted text-[9px] mt-1">Original RVT stays on this device. {project.rvtImportDiagnostics ? `Revit ${project.rvtImportDiagnostics.revitVersion ?? 'version unknown'} (${project.rvtImportDiagnostics.support || 'experimental'}): ${project.rvtImportDiagnostics.elementCount?.toLocaleString?.() ?? 'unknown'} elements exported; ${project.rvtImportDiagnostics.boundingBoxCount?.toLocaleString?.() ?? 'unknown'} bounding-box bodies; ${project.rvtImportDiagnostics.geometryGapConditions?.toLocaleString?.() ?? 'unknown'} geometry-gap conditions; ${project.rvtImportDiagnostics.warningCount ?? 'unknown'} parser warnings.` : 'Parser diagnostics unavailable.'}</p>}
                     {sourceModelAsset && !model && <div className="mt-2 rounded-[5px] border border-line bg-sunken p-3 text-[9px] text-muted">
-                      <p className="text-ink-3 font-semibold">Render this RVT offline</p>
-                      <ol className="list-decimal pl-4 mt-1.5 space-y-1">
-                        <li>Install the Lumen / Field Revit 2019 add-in from this project's <code>revit-bridge</code> folder, then restart Revit.</li>
-                        <li>Open the model in Revit and choose <span className="text-ink-3">Add-Ins → Lumen / Field: Export IFC</span>.</li>
-                        <li>Choose the exported IFC below. The viewer reads it locally.</li>
-                      </ol>
+                      <p className="text-ink-3 font-semibold">Local RVT parsing is available</p>
+                      <p className="mt-1">Choose an RVT to parse it in this browser, or choose an IFC directly. RVT parsing is capped at 64 MiB for browser memory.</p>
                     </div>}
                     <div className="grid grid-cols-2 gap-2 mt-2">
                       <label className="border border-line rounded-[4px] text-accent text-[10px] py-2 text-center cursor-pointer hover:border-accent">
-                        {uploading ? 'Saving locally…' : sourceModelAsset && !model ? '+ Choose exported IFC' : '+ Choose IFC or RVT'}
+                        {uploading ? 'Reading locally…' : '+ Choose IFC or RVT'}
                         <input type="file" accept=".ifc,.rvt,application/x-step,application/vnd.autodesk.revit" onChange={handleModelUpload} className="sr-only" disabled={uploading} />
                       </label>
                       <span className="border border-line rounded-[4px] text-muted text-[9px] py-2 text-center">IFC preview ≤64 MiB</span>
@@ -988,7 +1019,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           <div className="border-b border-line flex items-center justify-between px-3 sm:px-4 py-2 bg-surface shrink-0 gap-2">
             <span className="text-muted-2 text-[10px] sm:text-[11px] truncate">{activeRender ? `${activeRender.name} · ${project.name}` : `IFC 3D view · ${project.name}`}</span>
             <div className="flex items-center gap-2 shrink-0">
-              <span className="hidden sm:inline text-muted text-[9px]">{activeRender ? (activeRender.localOnly ? 'Saved on this device' : 'IFC file integrity verified') : modelReady ? 'IFC geometry loaded' : 'Ready for IFC'}</span>
+              <span className="hidden sm:inline text-muted text-[9px]">{activeRender ? (activeRender.localOnly ? 'Saved on this device' : 'IFC file integrity verified') : modelReady ? (model?.sourceFormat === 'rvt' ? 'RVT parsed locally' : 'IFC geometry loaded') : 'Ready for IFC or RVT'}</span>
               <button onClick={exportBrief} aria-label="Export visualization brief" title="Export visualization brief" className="sm:hidden border border-line rounded-[4px] w-7 h-7 text-muted">↓</button>
               <button onClick={exportBrief} className="hidden sm:block border border-line rounded-[4px] px-2.5 py-1 text-muted text-[10px] hover:border-line-hover">↓ Export brief</button>
             </div>

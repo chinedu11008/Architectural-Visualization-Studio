@@ -3,6 +3,10 @@ const STORE_NAME = 'assets';
 const objectUrls = new Map();
 export const MAX_BROWSER_IFC_BYTES = 64 * 1024 * 1024;
 export const MAX_BROWSER_RVT_BYTES = 300 * 1024 * 1024;
+// rvt-rs' browser build uses WebAssembly linear memory while decoding a
+// model. Keep parsing below 64 MiB to avoid making a large upload exhaust
+// the browser tab; the original RVT can still be retained up to 300 MiB.
+export const MAX_BROWSER_RVT_PARSE_BYTES = 64 * 1024 * 1024;
 
 export function createLocalId() {
   const value = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
