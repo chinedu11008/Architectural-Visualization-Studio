@@ -73,4 +73,17 @@ describe('seeded context layer', () => {
     expect(group.userData.layout.setback).toBeGreaterThanOrEqual(10);
     expect(group.userData.layout.plotBounds).toMatchObject({ minX: -15, maxX: 15, minY: -15, maxY: 15 });
   });
+
+  it('extends the ground landscape well beyond the site plot', () => {
+    const group = createContextLayer(19);
+    const ground = group.getObjectByName('Site ground · presentation only');
+    const { plotBounds, landscapeBounds } = group.userData.layout;
+
+    expect(ground.geometry.parameters.width).toBeGreaterThanOrEqual((plotBounds.maxX - plotBounds.minX) * 8);
+    expect(ground.geometry.parameters.height).toBeGreaterThanOrEqual((plotBounds.maxY - plotBounds.minY) * 8);
+    expect(landscapeBounds.minX).toBeLessThan(plotBounds.minX);
+    expect(landscapeBounds.maxX).toBeGreaterThan(plotBounds.maxX);
+    expect(landscapeBounds.minY).toBeLessThan(plotBounds.minY);
+    expect(landscapeBounds.maxY).toBeGreaterThan(plotBounds.maxY);
+  });
 });

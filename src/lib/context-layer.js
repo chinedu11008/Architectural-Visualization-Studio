@@ -307,16 +307,18 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
   const groundColors = { grass: '#66854e', gravel: hardscapeColors[0], paving: hardscapeColors[0] };
   const groundWidth = plot.maxX - plot.minX;
   const groundHeight = plot.maxY - plot.minY;
-  const grassTexture = groundStyle === 'grass' ? makeGrassTexture(groundWidth, groundHeight, vegetationColors) : null;
+  const landscapeWidth = Math.max(groundWidth * 8, size.x * 12, 120);
+  const landscapeHeight = Math.max(groundHeight * 8, size.y * 12, 120);
+  const grassTexture = groundStyle === 'grass' ? makeGrassTexture(landscapeWidth, landscapeHeight, vegetationColors) : null;
   const groundTexture = groundStyle !== 'grass'
-    ? makeHardscapeTexture(hardscapeColors, Math.max(1, groundWidth / 3.2), Math.max(1, groundHeight / 3.2))
+    ? makeHardscapeTexture(hardscapeColors, Math.max(1, landscapeWidth / 3.2), Math.max(1, landscapeHeight / 3.2))
     : null;
   const groundMaterial = new THREE.MeshStandardMaterial({
     color: groundStyle === 'grass' || groundTexture ? '#ffffff' : (groundColors[groundStyle] || groundColors.grass),
     roughness: 1,
     map: grassTexture || groundTexture,
   });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(plot.maxX - plot.minX + 4, plot.maxY - plot.minY + 4), groundMaterial);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(landscapeWidth, landscapeHeight), groundMaterial);
   ground.name = 'Site ground · presentation only';
   ground.position.set((plot.minX + plot.maxX) / 2, (plot.minY + plot.maxY) / 2, floor);
   ground.visible = contextObjects.grass !== false;
@@ -805,7 +807,20 @@ function makeRuleBasedContextLayer(bounds, radius, options) {
     }
   }
 
-  group.userData.layout = { buildingType, seed, setback, gateWidth, frontSide, plotBounds: { ...plot } };
+  group.userData.layout = {
+    buildingType,
+    seed,
+    setback,
+    gateWidth,
+    frontSide,
+    plotBounds: { ...plot },
+    landscapeBounds: {
+      minX: (plot.minX + plot.maxX - landscapeWidth) / 2,
+      maxX: (plot.minX + plot.maxX + landscapeWidth) / 2,
+      minY: (plot.minY + plot.maxY - landscapeHeight) / 2,
+      maxY: (plot.minY + plot.maxY + landscapeHeight) / 2,
+    },
+  };
   return group;
 }
 

@@ -459,6 +459,11 @@ export default function IfcViewer({ asset, referenceUrl, camera = 'isometric', l
       controls = orbit;
       orbit.enableDamping = true;
       orbit.dampingFactor = 0.08;
+      orbit.enablePan = true;
+      orbit.screenSpacePanning = false;
+      orbit.zoomToCursor = false;
+      orbit.minPolarAngle = 0;
+      orbit.maxPolarAngle = Math.PI / 2 - 0.01;
 
       const orientationRoot = new THREE.Group();
       orientationRoot.name = 'IFC coordinate correction · presentation only';

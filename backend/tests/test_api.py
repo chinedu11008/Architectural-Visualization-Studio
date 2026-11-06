@@ -278,6 +278,33 @@ def test_render_completion_requires_original_model_hash(api):
     assert "attachment" not in downloaded.headers.get("content-disposition", "")
 
 
+def test_delete_render_job_removes_only_its_render_image(api):
+    model, reference = upload_assets(api)
+    created = api.post("/api/render-jobs", json={
+        "project_id": "test-project",
+        "model_asset_id": model["id"],
+        "reference_asset_id": reference["id"],
+        "prompt": "Delete test render.",
+        "presentation": {"camera": "isometric", "lighting": "daylight", "material_style": "source"},
+    }).json()
+    api.post(f"/api/render-jobs/{created['id']}/start")
+    completed = api.post(
+        f"/api/render-jobs/{created['id']}/complete",
+        data={"metadata": json.dumps({"model_sha256": model["sha256"], "width": 1, "height": 1})},
+        files={"image": ("render.png", PNG_BYTES, "image/png")},
+    ).json()
+
+    deleted = api.delete(f"/api/render-jobs/{created['id']}")
+
+    assert deleted.status_code == 204
+    assert api.get(completed["result_url"]).status_code == 404
+    assert api.get(model["url"]).status_code == 200
+    assert api.get(reference["url"]).status_code == 200
+    assert api.get(f"/api/render-jobs/{created['id']}").status_code == 404
+    remaining_asset_ids = {asset["id"] for asset in api.get("/api/projects/test-project/assets").json()}
+    assert remaining_asset_ids == {model["id"], reference["id"]}
+
+
 def test_list_project_assets_and_jobs(api):
     model, reference = upload_assets(api)
     assets_resp = api.get("/api/projects/test-project/assets")

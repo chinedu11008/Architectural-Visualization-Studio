@@ -467,6 +467,50 @@ def get_render_job(job_id: str) -> dict:
     return job_dict(row)
 
 
+@app.delete("/api/render-jobs/{job_id}", status_code=204)
+def delete_render_job(job_id: str) -> Response:
+    asset_to_remove = None
+    with connect_db() as connection:
+        job = connection.execute(
+            "SELECT id, project_id, result_asset_id FROM render_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        if job is None:
+            raise HTTPException(status_code=404, detail="Render job not found")
+
+        if job["result_asset_id"]:
+            asset = connection.execute(
+                "SELECT id, project_id, kind, storage_name FROM assets WHERE id = ?",
+                (job["result_asset_id"],),
+            ).fetchone()
+            if asset and (asset["kind"] != "render" or asset["project_id"] != job["project_id"]):
+                raise HTTPException(status_code=409, detail="Render result asset does not belong to this job")
+
+            other_references = connection.execute(
+                "SELECT COUNT(*) FROM render_jobs WHERE result_asset_id = ? AND id != ?",
+                (job["result_asset_id"], job_id),
+            ).fetchone()[0]
+            if asset and not other_references:
+                asset_path = (ASSET_DIR / asset["storage_name"]).resolve()
+                if asset_path.parent != ASSET_DIR.resolve():
+                    raise HTTPException(status_code=500, detail="Render asset path is invalid")
+                asset_to_remove = asset_path
+
+        connection.execute("DELETE FROM render_jobs WHERE id = ?", (job_id,))
+        if job["result_asset_id"] and not other_references:
+            connection.execute("DELETE FROM assets WHERE id = ?", (job["result_asset_id"],))
+
+    if asset_to_remove:
+        try:
+            os.chmod(asset_to_remove, 0o600)
+            asset_to_remove.unlink(missing_ok=True)
+        except OSError as error:
+            raise HTTPException(status_code=500, detail="Render record was deleted but its stored image could not be removed") from error
+        with _asset_verification_cache_lock:
+            _asset_verification_cache.pop(str(asset_to_remove), None)
+
+    return Response(status_code=204)
+
+
 @app.post("/api/render-jobs/{job_id}/start")
 def start_render_job(job_id: str) -> dict:
     with connect_db() as connection:

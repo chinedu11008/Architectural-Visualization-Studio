@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Camera, Download } from 'lucide-react';
+import { Camera, Download, Trash2 } from 'lucide-react';
 import UserDropdown from '../components/UserDropdown';
-import { createLocalId, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, MAX_BROWSER_RVT_BYTES, MAX_BROWSER_RVT_PARSE_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
+import { createLocalId, deleteLocalAsset, getLocalAssetBlob, MAX_BROWSER_IFC_BYTES, MAX_BROWSER_RVT_BYTES, MAX_BROWSER_RVT_PARSE_BYTES, resolveLocalAssetUrl, saveLocalAsset } from '../lib/local-assets';
 import {
   BUILDING_ROLE_LABELS,
   BUILDING_TYPES,
@@ -102,6 +102,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
   const [localRenderUrls, setLocalRenderUrls] = useState({});
   const [feedback, setFeedback] = useState('');
   const [rendering, setRendering] = useState(false);
+  const [deletingRenderId, setDeletingRenderId] = useState(null);
   const [activeRenderId, setActiveRenderId] = useState(project.renders?.at(-1)?.id || null);
   const [captureRequest, setCaptureRequest] = useState(null);
   const [interiorMode, setInteriorMode] = useState(false);
@@ -710,6 +711,43 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
     }
   }, [camera, captureRequest, groundStyle, visibleStoreyId, layoutSeed, lighting, materialStyle, model, onUpdateProject, project.id, prompt, referenceName, referenceRoles, renders, resolvedEnvironment, resolvedSurroundingsRules, sceneObjects, selectedBuildingType]);
 
+  const deleteRender = async (render) => {
+    if (deletingRenderId || !window.confirm(`Delete ${render.name}? This cannot be undone.`)) return;
+    setDeletingRenderId(render.id);
+    try {
+      if (!render.localOnly) {
+        await readApiResponse(await fetch(`/api/render-jobs/${encodeURIComponent(render.id)}`, { method: 'DELETE' }));
+      }
+
+      let localCleanupError = null;
+      if (render.localId) {
+        try {
+          await deleteLocalAsset(render.localId);
+        } catch (error) {
+          if (render.localOnly) throw error;
+          localCleanupError = error;
+        }
+      }
+
+      const remainingRenders = renders.filter((item) => item.id !== render.id);
+      onUpdateProject({ renders: (project.renders || []).filter((item) => item.id !== render.id) });
+      setActiveRenderId((current) => current === render.id ? (remainingRenders.at(-1)?.id || null) : current);
+      setLocalRenderUrls((current) => {
+        if (!render.localId) return current;
+        const next = { ...current };
+        delete next[render.localId];
+        return next;
+      });
+      setNotice(localCleanupError
+        ? `${render.name} was deleted, but its local cached image could not be removed: ${localCleanupError.message || 'storage error'}`
+        : `${render.name} deleted.`);
+    } catch (error) {
+      setNotice(error.message || `Could not delete ${render.name}.`);
+    } finally {
+      setDeletingRenderId(null);
+    }
+  };
+
   const addFeedback = (event) => {
     event.preventDefault();
     if (!feedback.trim()) return;
@@ -1062,7 +1100,7 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                   <span className="shrink-0 bg-black/45 text-white/80 text-[9px] px-2 py-1 rounded-[3px] hidden sm:block">{savedContextLabel} · context separate</span>
                 </div>
               </div>}
-              {(modelReady || activeRender?.url) && <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
+              {(modelReady || activeRender) && <div className="absolute bottom-3 left-3 z-20 flex items-center gap-2">
                 {modelReady && <button onClick={() => setInteriorMode((current) => !current)} aria-pressed={interiorMode} title={interiorMode ? 'Show the full exterior model' : 'Hide the roof and exterior walls to inspect generated furnishings'} className={`border border-white/20 px-3 py-2 rounded-[4px] text-[10px] ${interiorMode ? 'bg-accent text-page' : 'bg-black/65 text-white hover:bg-black/80'}`}>
                   {interiorMode ? 'Exterior view' : 'Interior cutaway'}
                 </button>}
@@ -1073,6 +1111,16 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
                 {activeRender?.url && <a href={activeRender.url} download={`${(project.name || 'render').toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${(activeRender.name || 'render').toLowerCase().replace(/\s+/g, '-')}.png`} title={`Download ${activeRender.name}`} aria-label={`Download ${activeRender.name}`} className="pointer-events-auto flex items-center justify-center border border-white/20 bg-black/65 text-white w-9 h-9 rounded-[4px] hover:bg-black/80">
                   <Download size={15} strokeWidth={1.8} />
                 </a>}
+                {activeRender && <button
+                  type="button"
+                  onClick={() => deleteRender(activeRender)}
+                  disabled={Boolean(deletingRenderId)}
+                  title={`Delete ${activeRender.name}`}
+                  className="pointer-events-auto flex items-center gap-2 border border-red-300/40 bg-black/75 text-white px-3 py-2 rounded-[4px] text-[10px] hover:border-red-300 hover:bg-red-950/80 disabled:cursor-wait disabled:opacity-50"
+                >
+                  <Trash2 size={14} strokeWidth={1.8} />
+                  <span>{deletingRenderId === activeRender.id ? 'Deleting…' : 'Delete snapshot'}</span>
+                </button>}
               </div>}
             </div>
           </div>
@@ -1082,7 +1130,19 @@ export default function Workspace({ project, onUpdateProject, onNavigate }) {
           <div className="border-t border-line flex items-center gap-1 pl-3 sm:pl-4 py-2 bg-surface overflow-x-auto shrink-0">
             <button onClick={() => setActiveRenderId(null)} className={`flex-shrink-0 px-2.5 sm:px-3 py-1.5 rounded-[4px] text-[10px] ${!activeRender ? 'bg-primary text-on-primary' : 'border border-line text-muted hover:border-line-hover'}`}>3D model</button>
             {renders.map((render) => (
-              <button key={render.id} onClick={() => selectRender(render)} className={`flex-shrink-0 px-2.5 sm:px-3 py-1.5 rounded-[4px] text-[10px] ${activeRenderId === render.id ? 'bg-primary text-on-primary' : 'border border-line text-muted hover:border-line-hover'}`}>{render.name}</button>
+              <div key={render.id} className="flex flex-shrink-0 items-center gap-1">
+                <button onClick={() => selectRender(render)} className={`px-2.5 sm:px-3 py-1.5 rounded-[4px] text-[10px] ${activeRenderId === render.id ? 'bg-primary text-on-primary' : 'border border-line text-muted hover:border-line-hover'}`}>{render.name}</button>
+                <button
+                  type="button"
+                  onClick={() => deleteRender(render)}
+                  disabled={Boolean(deletingRenderId)}
+                  title={`Delete ${render.name}`}
+                  aria-label={`Delete ${render.name}`}
+                  className="flex h-7 w-7 items-center justify-center rounded-[4px] border border-line text-muted hover:border-red-500/60 hover:text-red-400 disabled:cursor-wait disabled:opacity-50"
+                >
+                  <Trash2 size={13} strokeWidth={1.8} />
+                </button>
+              </div>
             ))}
             <button onClick={() => { setActiveRenderId(null); setActivePanel('inputs'); setInputPanelOpen(true); }} className="flex-shrink-0 border border-dashed border-line text-muted-2 text-[10px] px-2.5 sm:px-3 py-1.5 rounded-[4px] hover:border-line-hover-2">+ New render</button>
           </div>

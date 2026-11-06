@@ -65,7 +65,23 @@ export async function getLocalAssetBlob(id) {
     const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(id);
     request.onsuccess = () => resolve(request.result?.blob || null);
     request.onerror = () => reject(request.error);
-  });
+  }).finally(() => database.close());
+}
+
+export async function deleteLocalAsset(id) {
+  if (!id) return;
+  const database = await openDatabase();
+  await new Promise((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = resolve;
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  }).finally(() => database.close());
+
+  const url = objectUrls.get(id);
+  if (url) URL.revokeObjectURL(url);
+  objectUrls.delete(id);
 }
 
 export async function resolveLocalAssetUrl(id) {
